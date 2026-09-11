@@ -1,0 +1,74 @@
+[
+  {
+    "extension": "png",
+    "mime": "image/png",
+    "media": "images",
+    "base64": "iVBORw0KGgoAdGVzdP9ieXRlcw=="
+  },
+  {
+    "extension": "jpg",
+    "mime": "image/jpeg",
+    "media": "images",
+    "base64": "/9j/AHRlc3T/Ynl0ZXM="
+  },
+  {
+    "extension": "webp",
+    "mime": "image/webp",
+    "media": "images",
+    "base64": "UklGRgAAAABXRUJQAHRlc3T/Ynl0ZXM="
+  },
+  {
+    "extension": "gif",
+    "mime": "image/gif",
+    "media": "images",
+    "base64": "R0lGODlhAHRlc3T/Ynl0ZXM="
+  },
+  {
+    "extension": "tiff",
+    "mime": "image/tiff",
+    "media": "images",
+    "base64": "SUkqAAB0ZXN0/2J5dGVz"
+  },
+  {
+    "extension": "bmp",
+    "mime": "image/bmp",
+    "media": "images",
+    "base64": "Qk0AdGVzdP9ieXRlcw=="
+  },
+  {
+    "extension": "ppm",
+    "mime": "image/x-portable-pixmap",
+    "media": "images",
+    "base64": "UDYAdGVzdP9ieXRlcw=="
+  },
+  {
+    "extension": "psd",
+    "mime": "image/vnd.adobe.photoshop",
+    "media": "images",
+    "base64": "OEJQUwABAHRlc3T/Ynl0ZXM="
+  },
+  {
+    "extension": "psb",
+    "mime": "image/vnd.adobe.photoshop",
+    "media": "images",
+    "base64": "OEJQUwACAHRlc3T/Ynl0ZXM="
+  },
+  {
+    "extension": "pdf",
+    "mime": "application/pdf",
+    "media": "documents",
+    "base64": "JVBERi0xLjcAdGVzdP9ieXRlcw=="
+  },
+  {
+    "extension": "mp4",
+    "mime": "video/mp4",
+    "media": "videos",
+    "base64": "AAAAGGZ0eXBpc29tAHRlc3T/Ynl0ZXM="
+  },
+  {
+    "extension": "mov",
+    "mime": "video/quicktime",
+    "media": "videos",
+    "base64": "AAAAGGZ0eXBxdCAgAHRlc3T/Ynl0ZXM="
+  }
+]

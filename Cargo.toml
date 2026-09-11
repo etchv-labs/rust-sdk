@@ -1,0 +1,16 @@
+[package]
+name = "etchv"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Official Etchv client for image, PDF and video watermarking"
+repository = "https://github.com/etchv-labs/rust-sdk"
+
+[dependencies]
+reqwest = { version = "0.13", default-features = false, features = ["blocking", "multipart", "json", "rustls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+tiny_http = "0.12"
