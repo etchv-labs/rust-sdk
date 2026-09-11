@@ -11,6 +11,9 @@ use std::{
     time::{Duration, Instant},
 };
 
+mod assets;
+pub use assets::{Asset, AssetListOptions, AssetPage};
+
 pub const MAX_FILE_SIZE: usize = 20 * 1024 * 1024;
 #[derive(Debug)]
 pub struct Error {
@@ -46,6 +49,8 @@ pub struct EmbedResult {
     pub request_id: Option<String>,
     pub content_type: String,
     pub filename: String,
+    pub asset_id: Option<String>,
+    pub source_asset_id: Option<String>,
 }
 #[derive(Debug, Deserialize)]
 pub struct DetectionUnit {
@@ -357,6 +362,8 @@ fn embedding(bytes: Vec<u8>, headers: HeaderMap) -> Result<EmbedResult> {
         request_id: header(&headers, "x-request-id"),
         content_type: mime,
         filename,
+        asset_id: header(&headers, "x-asset-id"),
+        source_asset_id: header(&headers, "x-source-asset-id"),
     })
 }
 fn valid_detection(v: &Value) -> bool {

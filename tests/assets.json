@@ -1,0 +1,22 @@
+{
+  "id": "ast_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "name": "launch.png",
+  "kind": "watermarked",
+  "media_type": "image",
+  "format": "PNG",
+  "content_type": "image/png",
+  "size_bytes": 4,
+  "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "parent_asset_id": "ast_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "request_id": "req_dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+  "watermark_id": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+  "created_at": "2026-09-11T00:00:00Z",
+  "updated_at": "2026-09-11T00:00:00Z",
+  "file_expires_at": "2026-10-11T00:00:00Z",
+  "file_available": true,
+  "version": 1,
+  "metadata": {
+    "campaign": "launch"
+  },
+  "download_url": "/assets/ast_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/content"
+}

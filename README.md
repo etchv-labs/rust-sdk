@@ -7,7 +7,7 @@ Official server-side client for image, PDF and video watermarking. Current stabl
 Add this dependency to `Cargo.toml` (not yet published on crates.io):
 ```toml
 [dependencies]
-etchv = { git = "https://github.com/etchv-labs/rust-sdk", tag = "v0.1.0" }
+etchv = { git = "https://github.com/etchv-labs/rust-sdk", tag = "v0.2.0" }
 serde_json = "1"
 ```
 
@@ -99,3 +99,32 @@ cargo test --locked
 This public repository is synchronized from the Etchv development monorepo. Issues and pull
 requests are welcome; maintainers incorporate accepted changes into the source before publishing
 the next snapshot. The MIT license covers this SDK, not the hosted service.
+
+## Asset library
+
+New successful embeddings save original and verified output assets. Files remain
+downloadable for 30 days; records stay until deleted. Use `assets:read` for listing,
+inspection and downloads, `assets:write` for edits, and `assets:delete` with current
+owner/admin membership for deletion. Existing keys need replacement to add scopes.
+
+```rust
+let page = client.list_assets(etchv::AssetListOptions {
+    kind: Some("watermarked".into()), ..Default::default()
+})?;
+for item in page.items {
+    let asset = client.get_asset(&item.id)?;
+    let updated = client.update_asset(&asset.id, asset.version,
+        &serde_json::json!({"metadata": {"campaign": "spring"}}))?;
+    if updated.file_available {
+        let bytes = client.download_asset(&updated.id)?;
+    }
+}
+// Use next_cursor with the same filters to continue listing.
+```
+
+Edits require the current version; reload and reconcile on HTTP 409. Metadata is
+replaced, not merged, and does not change the embedded watermark. Asset operations
+consume no credits. Downloads require authentication and return the original file
+format. Single and bulk deletion methods are also available; batches contain at
+most 50 IDs and delete atomically. Deleting an output blocks its job result replay.
+See [the asset API](https://etchv.com/docs/api/assets) for the complete contract.
