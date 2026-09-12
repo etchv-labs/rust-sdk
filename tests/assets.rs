@@ -64,10 +64,10 @@ fn asset_protocol() {
         .as_deref(),
         Some("next-page")
     );
-    assert_eq!(
-        c.get_asset(&id).unwrap().metadata.unwrap()["campaign"],
-        "launch"
-    );
+    let asset = c.get_asset(&id).unwrap();
+    assert_eq!(asset.metadata.unwrap()["campaign"], "launch");
+    assert!(asset.file_expires_at.is_none());
+    assert_eq!(asset.storage_provider.as_deref(), Some("s3"));
     assert_eq!(
         c.update_asset(&id, 1, &json!({"name":"renamed"}))
             .unwrap()

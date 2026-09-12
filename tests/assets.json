@@ -12,11 +12,16 @@
   "watermark_id": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
   "created_at": "2026-09-11T00:00:00Z",
   "updated_at": "2026-09-11T00:00:00Z",
-  "file_expires_at": "2026-10-11T00:00:00Z",
+  "file_expires_at": null,
   "file_available": true,
   "version": 1,
   "metadata": {
     "campaign": "launch"
   },
-  "download_url": "/assets/ast_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/content"
+  "download_url": "/assets/ast_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/content",
+  "storage_provider": "s3",
+  "storage_status": "stored",
+  "storage_destination_id": "dst_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "storage_delivery_id": "std_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "staging_deleted_at": "2026-09-12T12:00:00Z"
 }

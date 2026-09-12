@@ -6,6 +6,12 @@ use std::io::Read;
 
 #[derive(Debug, Deserialize)]
 pub struct Asset {
+    pub storage_provider: Option<String>,
+    pub storage_status: Option<String>,
+    pub storage_destination_id: Option<String>,
+    pub storage_delivery_id: Option<String>,
+    pub staging_expires_at: Option<String>,
+    pub staging_deleted_at: Option<String>,
     pub id: String,
     pub name: String,
     pub kind: String,
@@ -19,7 +25,7 @@ pub struct Asset {
     pub watermark_id: Option<String>,
     pub created_at: String,
     pub updated_at: String,
-    pub file_expires_at: String,
+    pub file_expires_at: Option<String>,
     pub file_available: bool,
     pub version: u64,
     pub metadata: Option<Value>,

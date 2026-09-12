@@ -7,7 +7,7 @@ Official server-side client for image, PDF and video watermarking. Current stabl
 Add this dependency to `Cargo.toml` (not yet published on crates.io):
 ```toml
 [dependencies]
-etchv = { git = "https://github.com/etchv-labs/rust-sdk", tag = "v0.4.0" }
+etchv = { git = "https://github.com/etchv-labs/rust-sdk", tag = "v0.5.0" }
 serde_json = "1"
 ```
 
@@ -103,7 +103,10 @@ the next snapshot. The MIT license covers this SDK, not the hosted service.
 ## Asset library
 
 New successful embeddings save original and verified output assets. Files remain
-downloadable for 30 days; records stay until deleted. Use `assets:read` for listing,
+downloadable for 30 days in Etchv storage by default; records stay until deleted.
+Results stored in a selected customer bucket follow that bucket’s retention.
+For those results, `file_expires_at` is `null`; `storage_provider`,
+`storage_destination_id` and `storage_status` identify the selected location and delivery state. Use `assets:read` for listing,
 inspection and downloads, `assets:write` for edits, and `assets:delete` with current
 owner/admin membership for deletion. Existing keys need replacement to add scopes.
 
@@ -145,14 +148,17 @@ Use the corresponding submission method for detection without forensic data. For
 
 Create an endpoint in the [Etchv dashboard](https://etchv.com/dashboard/webhooks), then pass its ID when submitting. Persist your idempotency key before the upload so a lost receipt can be recovered safely. Download from the authenticated result URL after success, or use the existing result method. See the [async guide](https://etchv.com/docs/api/async) and [webhook verification guide](https://etchv.com/docs/api/webhooks).
 
-## Optional cloud storage
+## Choose where results are stored
 
-Version 0.4.0 adds storage destination and object-key options to image,
+Version 0.5.0 adds storage destination and object-key options to image,
 PDF and video embedding, including asynchronous submission. Etchv automatically
-stores original and watermarked files for 30-day downloads without these options.
+uses its own storage by default, with 30-day downloads and no setup required.
 
-Only if you want an additional copy in your own cloud, configure and verify a
-destination in the dashboard, then use the optional parameters below.
+To use your own bucket instead for watermarked results, configure and verify a
+destination, then select it with the parameters below. After confirmed delivery,
+Etchv removes the temporary output and serves asset downloads from your bucket.
+Asset records stay in Etchv; customer bucket retention controls the result file.
+Original uploads retain their existing 30-day Etchv storage policy.
 
 ```rust
 let job = client.submit_embed("documents", &pdf_bytes,
