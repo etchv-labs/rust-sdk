@@ -119,6 +119,82 @@ impl Client {
             http,
         })
     }
+    pub fn submit_embed(
+        &self,
+        media: &str,
+        file: &[u8],
+        data: &Value,
+        options: Options,
+        webhook_id: Option<&str>,
+    ) -> Result<Value> {
+        if !data.is_object() || data.as_object().is_none_or(|v| v.is_empty()) {
+            return Err(error(0, "data must be a non-empty JSON object"));
+        }
+        self.submit(media, file, Some(data.to_string()), options, webhook_id)
+    }
+    pub fn submit_detection(
+        &self,
+        media: &str,
+        file: &[u8],
+        options: Options,
+        webhook_id: Option<&str>,
+    ) -> Result<Value> {
+        self.submit(media, file, None, options, webhook_id)
+    }
+    fn submit(
+        &self,
+        media: &str,
+        file: &[u8],
+        data: Option<String>,
+        mut options: Options,
+        webhook_id: Option<&str>,
+    ) -> Result<Value> {
+        if !["images", "documents", "videos"].contains(&media)
+            || file.is_empty()
+            || file.len() > MAX_FILE_SIZE
+        {
+            return Err(error(0, "Invalid media or file size"));
+        }
+        if let Some(id) = webhook_id
+            && (id.len() != 35
+                || !id.starts_with("wh_")
+                || !id[3..]
+                    .bytes()
+                    .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()))
+        {
+            return Err(error(0, "Invalid webhook ID"));
+        }
+        if options.idempotency_key.as_deref().is_none_or(str::is_empty) {
+            options.idempotency_key = Some(uuid::Uuid::new_v4().to_string());
+        }
+        let detect = data.is_none();
+        let path = format!(
+            "watermarks/{media}{}/async{}",
+            if detect { "/detect" } else { "" },
+            webhook_id
+                .map(|id| format!("?webhook_id={id}"))
+                .unwrap_or_default()
+        );
+        let (bytes, _) = self.request(path, Some(file), data, options, true, detect)?;
+        serde_json::from_slice(&bytes).map_err(|e| error(0, e))
+    }
+    pub fn get_job(&self, id: &str, detect: bool) -> Result<Value> {
+        if !valid_job(id) {
+            return Err(error(0, "Invalid request ID"));
+        }
+        let (bytes, _) = self.request(
+            format!(
+                "watermarks/{}/{id}",
+                if detect { "detection-jobs" } else { "jobs" }
+            ),
+            None,
+            None,
+            Options::default(),
+            false,
+            detect,
+        )?;
+        serde_json::from_slice(&bytes).map_err(|e| error(0, e))
+    }
     pub fn embed_image(&self, file: &[u8], data: &Value, options: Options) -> Result<EmbedResult> {
         self.embed("images", file, data, options)
     }
@@ -288,7 +364,9 @@ impl Client {
             if bytes.len() > MAX_FILE_SIZE {
                 return Err(error(status, "Response exceeds 20 MB"));
             }
-            if status == 200 {
+            if status == 200
+                || (status == 202 && path.split('?').next().unwrap_or("").ends_with("/async"))
+            {
                 return Ok((bytes, headers));
             }
             let detail: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);

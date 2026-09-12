@@ -7,7 +7,7 @@ Official server-side client for image, PDF and video watermarking. Current stabl
 Add this dependency to `Cargo.toml` (not yet published on crates.io):
 ```toml
 [dependencies]
-etchv = { git = "https://github.com/etchv-labs/rust-sdk", tag = "v0.2.0" }
+etchv = { git = "https://github.com/etchv-labs/rust-sdk", tag = "v0.3.0" }
 serde_json = "1"
 ```
 
@@ -128,3 +128,19 @@ consume no credits. Downloads require authentication and return the original fil
 format. Single and bulk deletion methods are also available; batches contain at
 most 50 IDs and delete atomically. Deleting an output blocks its job result replay.
 See [the asset API](https://etchv.com/docs/api/assets) for the complete contract.
+
+## Async jobs and webhooks
+
+Submit a background job and receive a JSON receipt without polling automatically. Choose `images`, `documents`, or `videos`; every currently supported native format uses the same submission method.
+
+```rust
+let job = client.submit_embed("documents", &pdf_bytes,
+    &serde_json::json!({"delivery": "delivery_001"}),
+    etchv::Options { filename: Some("document.pdf".into()),
+        idempotency_key: Some("delivery_001".into()) }, Some(&webhook_id))?;
+let status = client.get_job(job["request_id"].as_str().unwrap(), false)?;
+```
+
+Use the corresponding submission method for detection without forensic data. For detection status, set the status method’s `detect` argument to true. Existing embed/detect methods continue waiting for results.
+
+Create an endpoint in the [Etchv dashboard](https://etchv.com/dashboard/webhooks), then pass its ID when submitting. Persist your idempotency key before the upload so a lost receipt can be recovered safely. Download from the authenticated result URL after success, or use the existing result method. See the [async guide](https://etchv.com/docs/api/async) and [webhook verification guide](https://etchv.com/docs/api/webhooks).
