@@ -145,11 +145,14 @@ Use the corresponding submission method for detection without forensic data. For
 
 Create an endpoint in the [Etchv dashboard](https://etchv.com/dashboard/webhooks), then pass its ID when submitting. Persist your idempotency key before the upload so a lost receipt can be recovered safely. Download from the authenticated result URL after success, or use the existing result method. See the [async guide](https://etchv.com/docs/api/async) and [webhook verification guide](https://etchv.com/docs/api/webhooks).
 
-## Customer-owned storage
+## Optional cloud storage
 
 Version 0.4.0 adds storage destination and object-key options to image,
-PDF and video embedding, including asynchronous submission. Configure and verify
-a destination first in the dashboard.
+PDF and video embedding, including asynchronous submission. Etchv automatically
+stores original and watermarked files for 30-day downloads without these options.
+
+Only if you want an additional copy in your own cloud, configure and verify a
+destination in the dashboard, then use the optional parameters below.
 
 ```rust
 let job = client.submit_embed("documents", &pdf_bytes,
