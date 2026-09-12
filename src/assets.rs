@@ -49,6 +49,18 @@ fn path(id: &str) -> Result<String> {
     Ok(format!("assets/{id}"))
 }
 impl Client {
+    pub fn get_storage_delivery(&self, id: &str) -> Result<Value> {
+        if id.len() != 68
+            || !id.starts_with("std_")
+            || !id[4..]
+                .bytes()
+                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+        {
+            return Err(error(0, "Invalid storage delivery ID"));
+        }
+        let bytes = self.asset_request(&format!("storage/deliveries/{id}"), Method::GET, None)?;
+        serde_json::from_slice(&bytes).map_err(|e| error(0, e))
+    }
     fn asset_request(&self, path: &str, method: Method, body: Option<Value>) -> Result<Vec<u8>> {
         let mut request = self
             .http

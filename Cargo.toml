@@ -1,6 +1,6 @@
 [package]
 name = "etchv"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2024"
 license = "MIT"
 description = "Official Etchv client for image, PDF and video watermarking"

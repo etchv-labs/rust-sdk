@@ -7,7 +7,7 @@ Official server-side client for image, PDF and video watermarking. Current stabl
 Add this dependency to `Cargo.toml` (not yet published on crates.io):
 ```toml
 [dependencies]
-etchv = { git = "https://github.com/etchv-labs/rust-sdk", tag = "v0.3.0" }
+etchv = { git = "https://github.com/etchv-labs/rust-sdk", tag = "v0.4.0" }
 serde_json = "1"
 ```
 
@@ -144,3 +144,30 @@ let status = client.get_job(job["request_id"].as_str().unwrap(), false)?;
 Use the corresponding submission method for detection without forensic data. For detection status, set the status method’s `detect` argument to true. Existing embed/detect methods continue waiting for results.
 
 Create an endpoint in the [Etchv dashboard](https://etchv.com/dashboard/webhooks), then pass its ID when submitting. Persist your idempotency key before the upload so a lost receipt can be recovered safely. Download from the authenticated result URL after success, or use the existing result method. See the [async guide](https://etchv.com/docs/api/async) and [webhook verification guide](https://etchv.com/docs/api/webhooks).
+
+## Customer-owned storage
+
+Version 0.4.0 adds storage destination and object-key options to image,
+PDF and video embedding, including asynchronous submission. Configure and verify
+a destination first in the dashboard.
+
+```rust
+let job = client.submit_embed("documents", &pdf_bytes,
+    &serde_json::json!({"recipient": "customer-123"}), etchv::Options {
+        filename: Some("report.pdf".into()),
+        idempotency_key: Some("report-export-001".into()),
+        storage_destination_id: Some(destination_id.into()),
+        storage_key: Some("reports/watermarked.pdf".into()),
+    }, None)?;
+let // After the watermark job reports succeeded:
+delivery = client.get_storage_delivery(job["storage_delivery_id"].as_str().unwrap())?;
+```
+
+The upload is queued after watermark verification, so its delivery record can
+initially return 404 while the watermark job is still processing. Wait for the
+watermark job to succeed before polling storage. Poll until `status` is `stored`,
+or handle a terminal failure. Upload retries do not watermark again or charge
+another credit. Binary embedding results include a storage delivery ID too.
+
+Use `storage:read` to inspect deliveries. Storage options do not apply to detection.
+See the [storage setup, retention and retry guide](https://etchv.com/docs/storage).

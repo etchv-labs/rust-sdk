@@ -39,6 +39,8 @@ fn error(status: u16, detail: impl ToString) -> Error {
 type Result<T> = std::result::Result<T, Error>;
 #[derive(Default, Clone)]
 pub struct Options {
+    pub storage_destination_id: Option<String>,
+    pub storage_key: Option<String>,
     pub filename: Option<String>,
     pub idempotency_key: Option<String>,
 }
@@ -51,6 +53,7 @@ pub struct EmbedResult {
     pub filename: String,
     pub asset_id: Option<String>,
     pub source_asset_id: Option<String>,
+    pub storage_delivery_id: Option<String>,
 }
 #[derive(Debug, Deserialize)]
 pub struct DetectionUnit {
@@ -306,6 +309,32 @@ impl Client {
         durable: bool,
         detection_job: bool,
     ) -> Result<(Vec<u8>, HeaderMap)> {
+        if options.storage_key.is_some() && options.storage_destination_id.is_none() {
+            return Err(error(0, "Storage key requires destination"));
+        }
+        if let Some(ref id) = options.storage_destination_id {
+            if data.is_none()
+                || id.len() != 36
+                || !id.starts_with("dst_")
+                || !id[4..]
+                    .bytes()
+                    .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+            {
+                return Err(error(0, "Invalid storage destination or detection request"));
+            }
+            let mut url = reqwest::Url::parse(&format!("https://etchv.invalid/{path}"))
+                .map_err(|e| error(0, e))?;
+            url.query_pairs_mut()
+                .append_pair("storage_destination_id", id);
+            if let Some(ref key) = options.storage_key {
+                url.query_pairs_mut().append_pair("storage_key", key);
+            }
+            path = format!(
+                "{}?{}",
+                url.path().trim_start_matches('/'),
+                url.query().unwrap_or_default()
+            );
+        }
         let started = Instant::now();
         let mut request_id = None;
         let pause = |seconds: f64| {
@@ -442,6 +471,7 @@ fn embedding(bytes: Vec<u8>, headers: HeaderMap) -> Result<EmbedResult> {
         filename,
         asset_id: header(&headers, "x-asset-id"),
         source_asset_id: header(&headers, "x-source-asset-id"),
+        storage_delivery_id: header(&headers, "x-storage-delivery-id"),
     })
 }
 fn valid_detection(v: &Value) -> bool {

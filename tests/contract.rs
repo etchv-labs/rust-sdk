@@ -83,6 +83,7 @@ fn contract() {
         let opts = Options {
             filename: Some(format!("input.{ext}")),
             idempotency_key: Some("stable-key".into()),
+            ..Default::default()
         };
         let r = match scenario {
             "embed-job" => c.embed_document(&b, &data, opts).map(|_| ()),

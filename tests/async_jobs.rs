@@ -13,6 +13,15 @@ fn async_receipts_never_poll() {
                 .recv_timeout(Duration::from_secs(5))
                 .unwrap()
                 .unwrap();
+            if !req.url().contains("/detect/") {
+                let u = reqwest::Url::parse(&format!("http://localhost{}", req.url())).unwrap();
+                let q: std::collections::HashMap<_, _> = u.query_pairs().collect();
+                assert_eq!(
+                    q.get("storage_destination_id").unwrap(),
+                    &format!("dst_{}", "c".repeat(32))
+                );
+                assert_eq!(q.get("storage_key").unwrap(), "a b/#file.pdf");
+            }
             assert_eq!(req.method().as_str(), "POST");
             assert!(req.url().contains("/async?webhook_id=wh_"));
             assert!(
@@ -37,6 +46,7 @@ fn async_receipts_never_poll() {
         let options = || Options {
             filename: None,
             idempotency_key: Some("stable_test_key".into()),
+            ..Default::default()
         };
         assert_eq!(
             client
@@ -44,7 +54,11 @@ fn async_receipts_never_poll() {
                     media,
                     b"file",
                     &json!({"asset":"test"}),
-                    options(),
+                    Options {
+                        storage_destination_id: Some(format!("dst_{}", "c".repeat(32))),
+                        storage_key: Some("a b/#file.pdf".into()),
+                        ..options()
+                    },
                     Some(&webhook)
                 )
                 .unwrap()["status"],
