@@ -119,4 +119,12 @@ fn validates_input() {
         c.embed_image(&[], &json!({"a":1}), Options::default())
             .is_err()
     );
+    assert!(
+        c.embed_image(
+            &vec![0; etchv::MAX_FILE_SIZE + 1],
+            &json!({"a":1}),
+            Options::default()
+        )
+        .is_err()
+    );
 }

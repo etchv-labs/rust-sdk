@@ -77,10 +77,11 @@ pub const USER_AGENT: &str = concat!("etchv-rust/", env!("CARGO_PKG_VERSION"));
 pub const DEFAULT_BASE_URL: &str = "https://api.etchv.com";
 /// Default client deadline used by [`Client::new`].
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(120);
-/// Largest upload the API accepts (20 MB).
-pub const MAX_FILE_SIZE: usize = 20 * 1024 * 1024;
-/// Upper bound on any response body the SDK will buffer.
-const MAX_RESPONSE_SIZE: usize = 256 * 1024 * 1024;
+/// Largest upload the API accepts (50 MB). The API rejects PDFs and videos
+/// over 20 MB with status 413.
+pub const MAX_FILE_SIZE: usize = 50 * 1024 * 1024;
+/// Largest response or result file the SDK will buffer (256 MB).
+pub const MAX_DOWNLOAD_SIZE: usize = 256 * 1024 * 1024;
 
 /// Media family of an upload; selects the `/watermarks/{media}` endpoint.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -374,7 +375,7 @@ fn read_body(response: Response) -> std::io::Result<Vec<u8>> {
     // Read with a hard bound even when the server omits Content-Length.
     let mut bytes = Vec::new();
     response
-        .take((MAX_RESPONSE_SIZE + 1) as u64)
+        .take((MAX_DOWNLOAD_SIZE + 1) as u64)
         .read_to_end(&mut bytes)?;
     Ok(bytes)
 }
@@ -715,7 +716,7 @@ impl Client {
                     continue;
                 }
             };
-            if bytes.len() > MAX_RESPONSE_SIZE {
+            if bytes.len() > MAX_DOWNLOAD_SIZE {
                 return Err(fail(
                     Error::response(status, "Response exceeds the SDK size limit"),
                     request_id,
@@ -792,7 +793,7 @@ impl Client {
             err.request_id = request_id.clone();
             err
         })?;
-        if bytes.len() > MAX_RESPONSE_SIZE {
+        if bytes.len() > MAX_DOWNLOAD_SIZE {
             return Err(Error::response(
                 status,
                 "Response exceeds the SDK size limit",
@@ -847,7 +848,7 @@ fn prepare<'a>(
     async_query: Option<&[(&str, &str)]>,
 ) -> Result<(String, Upload<'a>, Option<String>)> {
     if file.is_empty() || file.len() > MAX_FILE_SIZE {
-        return Err(Error::input("file must contain 1 byte to 20 MB"));
+        return Err(Error::input("file must contain 1 byte to 50 MB"));
     }
     let mut key = options.idempotency_key.filter(|k| !k.is_empty());
     if let Some(ref k) = key
