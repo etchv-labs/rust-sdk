@@ -1,0 +1,41 @@
+name: CodeQL on Node 26
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+  schedule:
+    - cron: "21 6 * * 1"
+permissions:
+  contents: read
+  security-events: write
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [actions, python, rust]
+    steps:
+      - uses: $/.github/actions/node26
+      - uses: actions/checkout@v7.0.1
+      - name: Verify extractor Node runtime
+        run: test "$(node --version)" = "v26.10.0"
+      - uses: actions/setup-go@v7.0.0
+        if: matrix.language == 'go'
+        with:
+          go-version: '1.27.x'
+          cache: false
+      - uses: github/codeql-action/init@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.language == 'go' && 'autobuild' || 'none' }}
+      - uses: github/codeql-action/autobuild@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4
+        if: matrix.language == 'go'
+      - uses: github/codeql-action/analyze@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4
+        with:
+          category: /language:${{ matrix.language }}
+          # Temporary qualification retains default setup; normal runs always upload.
+          upload: ${{ vars.ETCHV_CODEQL_QUALIFICATION == 'true' && 'never' || 'always' }}
+          upload-database: ${{ vars.ETCHV_CODEQL_QUALIFICATION != 'true' }}
