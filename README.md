@@ -32,6 +32,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
+## GPU processing
+
+Business and Enterprise plans can request GPU processing for any embed, detect or async submission
+(other plans receive HTTP 403). GPU operations cost 3× credits; when no GPU is ready the job runs on CPU
+at normal credits. `accelerator` on the result (and on job receipts) reports the hardware that actually ran.
+
+```rust
+use etchv::{Accelerator, Options};
+
+let result = client.embed_image(&image, &data, Options::new().accelerator(Accelerator::Gpu))?;
+println!("processed on {:?}", result.accelerator); // Some(Accelerator::Gpu) or Some(Accelerator::Cpu)
+```
+
 ## Async jobs
 
 ```rust
@@ -66,6 +79,8 @@ Detection uses `submit_detection`, `get_detection_job` and `get_detection_result
 Every method returns `Result<T, etchv::Error>`. `Error` has `kind` (`ErrorKind::Api`, `Timeout`, `Transport`, ...),
 `status_code` (`0` when no HTTP response), `request_id`, `idempotency_key` and `message()`.
 Include the request ID when contacting support.
+Embedding and video detection retry HTTP 429, 502, 503 and 504 (honoring `Retry-After`) until the client deadline.
+Other HTTP 429 errors carry `retry_after` (a `Duration`, `None` without the header), `code()` (`rate_limited` or `concurrency_limited`) and `limit()`.
 
 ```rust
 if let Err(e) = client.get_embed_result(&request_id) {

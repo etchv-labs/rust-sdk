@@ -1,5 +1,6 @@
 use serde_json::Value;
 use std::fmt;
+use std::time::Duration;
 
 /// Broad category of an [`Error`].
 ///
@@ -41,6 +42,8 @@ pub struct Error {
     /// Idempotency key used for the request, if any. Retry with the same key
     /// to recover the same job without another charge.
     pub idempotency_key: Option<String>,
+    /// Delay requested by the `Retry-After` header of an HTTP 429 response.
+    pub retry_after: Option<Duration>,
     source: Option<Box<dyn std::error::Error + Send + Sync + 'static>>,
 }
 
@@ -52,6 +55,7 @@ impl Error {
             detail: detail.into(),
             request_id: None,
             idempotency_key: None,
+            retry_after: None,
             source: None,
         }
     }
@@ -82,6 +86,10 @@ impl Error {
         match serde_json::from_str::<Value>(&self.detail) {
             Ok(Value::Object(body)) => match body.get("detail") {
                 Some(Value::String(s)) => Some(s.clone()),
+                Some(Value::Object(detail)) => detail
+                    .get("message")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
                 Some(Value::Array(items)) => {
                     let parts: Vec<&str> = items
                         .iter()
@@ -93,6 +101,33 @@ impl Error {
             },
             _ => None,
         }
+    }
+
+    /// Machine-readable `detail.code` from an API error body, when present
+    /// (for example `rate_limited` or `concurrency_limited` on HTTP 429).
+    pub fn code(&self) -> Option<String> {
+        if self.kind != ErrorKind::Api {
+            return None;
+        }
+        serde_json::from_str::<Value>(&self.detail)
+            .ok()?
+            .get("detail")?
+            .get("code")?
+            .as_str()
+            .map(str::to_owned)
+    }
+
+    /// The limit that was exceeded (`detail.limit`, for example requests per
+    /// window or concurrent jobs), when the API reports one.
+    pub fn limit(&self) -> Option<u64> {
+        if self.kind != ErrorKind::Api {
+            return None;
+        }
+        serde_json::from_str::<Value>(&self.detail)
+            .ok()?
+            .get("detail")?
+            .get("limit")?
+            .as_u64()
     }
 
     /// `true` for HTTP 410: a saved result expired or its asset was deleted.

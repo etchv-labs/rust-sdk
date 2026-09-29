@@ -112,6 +112,54 @@ impl Media {
     }
 }
 
+/// Processing hardware for a watermarking or detection call.
+///
+/// GPU processing requires the Business plan or higher (other plans receive
+/// HTTP 403) and costs 3× the CPU credits. When no GPU is ready the job runs on
+/// CPU at normal credits; the result's `accelerator` field reports the hardware
+/// that actually ran.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum Accelerator {
+    /// CPU processing (the API default).
+    Cpu,
+    /// GPU processing (Business and Enterprise plans).
+    Gpu,
+}
+
+impl Accelerator {
+    /// Wire value: `cpu` or `gpu`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Accelerator::Cpu => "cpu",
+            Accelerator::Gpu => "gpu",
+        }
+    }
+    fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "cpu" => Some(Accelerator::Cpu),
+            "gpu" => Some(Accelerator::Gpu),
+            _ => None,
+        }
+    }
+}
+
+impl fmt::Display for Accelerator {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Lenient deserializer: missing, null or unknown values become `None`.
+fn accelerator_field<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<Option<Accelerator>, D::Error> {
+    Ok(Option::<Value>::deserialize(deserializer)?
+        .as_ref()
+        .and_then(Value::as_str)
+        .and_then(Accelerator::parse))
+}
+
 /// Per-request options for watermarking and detection calls.
 ///
 /// Build with [`Options::new`] and the chained setters:
@@ -119,7 +167,8 @@ impl Media {
 /// ```
 /// let options = etchv::Options::new()
 ///     .filename("report.pdf")
-///     .idempotency_key("report-export-001");
+///     .idempotency_key("report-export-001")
+///     .accelerator(etchv::Accelerator::Gpu);
 /// ```
 #[derive(Debug, Default, Clone)]
 #[non_exhaustive]
@@ -136,6 +185,9 @@ pub struct Options {
     /// Relative object key beneath the destination prefix. Requires
     /// `storage_destination_id`.
     pub storage_key: Option<String>,
+    /// Requested processing hardware (`accelerator` query parameter). Omitted
+    /// when `None`, which uses CPU. See [`Accelerator`].
+    pub accelerator: Option<Accelerator>,
 }
 
 impl Options {
@@ -163,6 +215,13 @@ impl Options {
         self.storage_key = Some(key.into());
         self
     }
+    /// Request CPU or GPU processing. GPU requires the Business plan or higher
+    /// and costs 3× credits; it falls back to CPU at normal credits when no GPU
+    /// is ready.
+    pub fn accelerator(mut self, accelerator: Accelerator) -> Self {
+        self.accelerator = Some(accelerator);
+        self
+    }
 }
 
 /// A verified watermarked file returned by an embed call.
@@ -184,6 +243,9 @@ pub struct EmbedResult {
     pub source_asset_id: Option<String>,
     /// Customer storage delivery ID when a destination was selected.
     pub storage_delivery_id: Option<String>,
+    /// Hardware that actually processed the request (`X-Etchv-Accelerator`),
+    /// when reported.
+    pub accelerator: Option<Accelerator>,
 }
 
 impl fmt::Debug for EmbedResult {
@@ -197,6 +259,7 @@ impl fmt::Debug for EmbedResult {
             .field("asset_id", &self.asset_id)
             .field("source_asset_id", &self.source_asset_id)
             .field("storage_delivery_id", &self.storage_delivery_id)
+            .field("accelerator", &self.accelerator)
             .finish()
     }
 }
@@ -231,6 +294,9 @@ pub struct DetectionResult {
     /// Etchv request ID.
     #[serde(skip)]
     pub request_id: Option<String>,
+    /// Hardware that actually processed the request, when reported.
+    #[serde(default, deserialize_with = "accelerator_field")]
+    pub accelerator: Option<Accelerator>,
 }
 
 /// Processing state of an asynchronous job.
@@ -313,6 +379,13 @@ pub struct JobReceipt {
     /// Customer storage delivery, if selected.
     #[serde(default)]
     pub storage_delivery_id: Option<String>,
+    /// Hardware requested at submission.
+    #[serde(default, deserialize_with = "accelerator_field")]
+    pub accelerator_requested: Option<Accelerator>,
+    /// Hardware that processed (or is processing) the job, when known. Differs
+    /// from `accelerator_requested` after an automatic CPU fallback.
+    #[serde(default, deserialize_with = "accelerator_field")]
+    pub accelerator: Option<Accelerator>,
 }
 
 /// Identity of the API key, returned by [`Client::get_api_key_info`].
@@ -371,6 +444,9 @@ fn valid_job(s: &str) -> bool {
 fn header(h: &HeaderMap, name: &str) -> Option<String> {
     h.get(name).and_then(|v| v.to_str().ok()).map(str::to_owned)
 }
+fn accelerator_header(h: &HeaderMap) -> Option<Accelerator> {
+    header(h, "x-etchv-accelerator").and_then(|v| Accelerator::parse(&v))
+}
 fn read_body(response: Response) -> std::io::Result<Vec<u8>> {
     // Read with a hard bound even when the server omits Content-Length.
     let mut bytes = Vec::new();
@@ -383,6 +459,13 @@ fn retry_after(headers: &HeaderMap) -> Option<f64> {
     header(headers, "retry-after")
         .and_then(|s| s.trim().parse::<f64>().ok())
         .filter(|s| s.is_finite())
+}
+/// `Retry-After` of an HTTP 429 response, exposed on the returned error.
+fn rate_limit_delay(status: u16, headers: &HeaderMap) -> Option<Duration> {
+    (status == 429)
+        .then(|| retry_after(headers))
+        .flatten()
+        .map(|seconds| Duration::from_secs_f64(seconds.clamp(0.0, 86_400.0)))
 }
 fn with_query(path: &str, pairs: &[(&str, &str)]) -> String {
     if pairs.is_empty() {
@@ -752,7 +835,9 @@ impl Client {
                 continue;
             }
             let body = String::from_utf8_lossy(&bytes[..bytes.len().min(10000)]).into_owned();
-            return Err(fail(Error::new(ErrorKind::Api, status, body), request_id));
+            let mut err = Error::new(ErrorKind::Api, status, body);
+            err.retry_after = rate_limit_delay(status, &headers);
+            return Err(fail(err, request_id));
         }
         Err(fail(
             Error::new(
@@ -788,6 +873,7 @@ impl Client {
         })?;
         let status = response.status().as_u16();
         let request_id = header(response.headers(), "x-request-id");
+        let retry_after = rate_limit_delay(status, response.headers());
         let bytes = read_body(response).map_err(|e| {
             let mut err = Error::transport(e);
             err.request_id = request_id.clone();
@@ -806,6 +892,7 @@ impl Client {
                 String::from_utf8_lossy(&bytes[..bytes.len().min(10000)]).into_owned(),
             );
             err.request_id = request_id;
+            err.retry_after = retry_after;
             return Err(err);
         }
         Ok((status, bytes))
@@ -878,6 +965,9 @@ fn prepare<'a>(
             pairs.push(("storage_key", k));
         }
     }
+    if let Some(accelerator) = options.accelerator {
+        pairs.push(("accelerator", accelerator.as_str()));
+    }
     let path = format!(
         "watermarks/{}{}{}",
         media.segment(),
@@ -933,6 +1023,7 @@ fn embedding(bytes: Vec<u8>, headers: HeaderMap) -> Result<EmbedResult> {
         asset_id: header(&headers, "x-asset-id"),
         source_asset_id: header(&headers, "x-source-asset-id"),
         storage_delivery_id: header(&headers, "x-storage-delivery-id"),
+        accelerator: accelerator_header(&headers),
     })
 }
 
@@ -979,6 +1070,7 @@ fn detection(b: &[u8], h: &HeaderMap) -> Result<DetectionResult> {
     let mut d: DetectionResult =
         serde_json::from_value(v).map_err(|_| invalid("Invalid detection response"))?;
     d.request_id = request_id;
+    d.accelerator = accelerator_header(h).or(d.accelerator);
     Ok(d)
 }
 
@@ -1016,6 +1108,14 @@ mod tests {
         let text = format!("{c:?}");
         assert!(!text.contains("etchv_secret_value"));
         assert!(text.contains("[redacted]"));
+    }
+
+    #[test]
+    fn accelerator_values() {
+        assert_eq!(Accelerator::Gpu.to_string(), "gpu");
+        assert_eq!(Accelerator::Cpu.as_str(), "cpu");
+        assert_eq!(Accelerator::parse(" GPU "), Some(Accelerator::Gpu));
+        assert_eq!(Accelerator::parse("tpu"), None);
     }
 
     #[test]
