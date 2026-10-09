@@ -77,9 +77,18 @@ pub const USER_AGENT: &str = concat!("etchv-rust/", env!("CARGO_PKG_VERSION"));
 pub const DEFAULT_BASE_URL: &str = "https://api.etchv.com";
 /// Default client deadline used by [`Client::new`].
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(120);
-/// Largest upload the API accepts (50 MB). The API rejects PDFs and videos
+/// Largest file accepted for embedding (50 MB). The API rejects PDFs and videos
 /// over 20 MB with status 413.
 pub const MAX_FILE_SIZE: usize = 50 * 1024 * 1024;
+/// Largest file accepted for detection (192 MB): detection checks files Etchv
+/// delivered, up to 192 MB for images, 64 MB for PDFs and 100 MB for video.
+pub const MAX_DETECTION_FILE_SIZE: usize = 192 * 1024 * 1024;
+/// Default [`Client::with_large_file_threshold`]: files above 40 MB go through
+/// an upload session instead of the request body.
+pub const LARGE_FILE_THRESHOLD: usize = 40 * 1024 * 1024;
+/// Synchronous image and PDF detection takes files up to 95 MB; larger files
+/// are detected as a background job, which the detect methods wait for.
+const SYNC_DETECTION_MAX_SIZE: usize = 95 * 1024 * 1024;
 /// Largest response or result file the SDK will buffer (256 MB).
 pub const MAX_DOWNLOAD_SIZE: usize = 256 * 1024 * 1024;
 
@@ -96,6 +105,13 @@ pub enum Media {
 }
 
 impl Media {
+    fn upload_kind(self) -> UploadKind {
+        match self {
+            Media::Image => UploadKind::Image,
+            Media::Document => UploadKind::Document,
+            Media::Video => UploadKind::Video,
+        }
+    }
     fn segment(self) -> &'static str {
         match self {
             Media::Image => "images",
@@ -110,6 +126,64 @@ impl Media {
             Media::Video => "video.mp4",
         }
     }
+}
+
+/// What an upload session will be used for (see [`Client::upload_file`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum UploadKind {
+    /// Embedding an image (up to 50 MB).
+    Image,
+    /// Embedding a PDF (up to 20 MB).
+    Document,
+    /// Embedding a video (up to 20 MB).
+    Video,
+    /// Detecting a delivered file (up to 192 MB).
+    Detect,
+}
+
+impl UploadKind {
+    /// Wire value: `image`, `document`, `video` or `detect`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            UploadKind::Image => "image",
+            UploadKind::Document => "document",
+            UploadKind::Video => "video",
+            UploadKind::Detect => "detect",
+        }
+    }
+}
+
+/// A file uploaded once through [`Client::upload_file`]. Send its `upload_id`
+/// instead of the file to an embed or detect request.
+#[derive(Debug, Clone, Deserialize)]
+#[non_exhaustive]
+pub struct UploadSession {
+    /// Upload ID (`upl_…`).
+    pub upload_id: String,
+    /// `image`, `document`, `video` or `detect`.
+    pub kind: String,
+    /// Sanitized filename.
+    pub filename: String,
+    /// Size in bytes.
+    pub size: u64,
+    /// `received` once the file is stored; later `consumed`.
+    pub status: String,
+    /// When the session expires (ISO 8601).
+    pub expires_at: String,
+}
+
+#[derive(Deserialize)]
+struct SignedUpload {
+    method: String,
+    url: String,
+}
+
+#[derive(Deserialize)]
+struct CreatedUpload {
+    #[serde(flatten)]
+    session: UploadSession,
+    upload: SignedUpload,
 }
 
 /// Processing hardware for a watermarking or detection call.
@@ -409,6 +483,7 @@ pub struct Client {
     base: String,
     timeout: Duration,
     http: Http,
+    large_file_threshold: usize,
 }
 
 impl fmt::Debug for Client {
@@ -417,6 +492,7 @@ impl fmt::Debug for Client {
             .field("api_key", &"[redacted]")
             .field("base_url", &self.base)
             .field("timeout", &self.timeout)
+            .field("large_file_threshold", &self.large_file_threshold)
             .finish()
     }
 }
@@ -484,6 +560,8 @@ struct Upload<'a> {
     file: &'a [u8],
     filename: String,
     data: Option<String>,
+    // A received upload session sent instead of the file.
+    upload_id: Option<String>,
 }
 
 impl Client {
@@ -533,7 +611,105 @@ impl Client {
             base: base.trim_end_matches('/').into(),
             timeout,
             http,
+            large_file_threshold: LARGE_FILE_THRESHOLD,
         })
+    }
+
+    /// Send files larger than `bytes` through an upload session (default
+    /// [`LARGE_FILE_THRESHOLD`], 40 MB) instead of the request body.
+    pub fn with_large_file_threshold(mut self, bytes: usize) -> Result<Self> {
+        if bytes == 0 {
+            return Err(Error::input("large file threshold must be positive"));
+        }
+        self.large_file_threshold = bytes;
+        Ok(self)
+    }
+
+    /// Upload a file once to a signed URL (`POST /uploads`, then `PUT`) and
+    /// return its session. Pass `upload_id` instead of the file to an embed or
+    /// detect request. Embed, detect and submit calls do this automatically
+    /// above the large-file threshold.
+    ///
+    /// The signed URL carries its own authorization; the API key is never sent
+    /// to it. Transport errors and server errors on the `PUT` are retried until
+    /// the client deadline.
+    pub fn upload_file(
+        &self,
+        kind: UploadKind,
+        file: &[u8],
+        filename: &str,
+    ) -> Result<UploadSession> {
+        if file.is_empty() {
+            return Err(Error::input("file must contain at least 1 byte"));
+        }
+        let started = Instant::now();
+        let created: CreatedUpload = self.call_json(
+            Method::POST,
+            "uploads",
+            Some(serde_json::json!({"kind": kind.as_str(), "filename": filename, "size": file.len()})),
+        )?;
+        // Same rule as the base URL: HTTPS, or HTTP only for a local test server.
+        let target = reqwest::Url::parse(&created.upload.url).ok();
+        let secure = target.as_ref().is_some_and(|u| {
+            u.scheme() == "https"
+                || (u.scheme() == "http"
+                    && matches!(u.host_str(), Some("localhost" | "127.0.0.1" | "[::1]")))
+        });
+        if created.upload.method != "PUT" || !secure {
+            return Err(Error::response(201, "Invalid upload session response"));
+        }
+        while started.elapsed() < self.timeout {
+            let remaining = self
+                .timeout
+                .saturating_sub(started.elapsed())
+                .max(Duration::from_millis(1));
+            let response = self
+                .http
+                .put(&created.upload.url)
+                .header("Content-Type", "application/octet-stream")
+                .body(file.to_vec())
+                .timeout(remaining)
+                .send();
+            match response {
+                Ok(r) if r.status().as_u16() == 200 => {
+                    let mut session = created.session;
+                    session.status = "received".into();
+                    return Ok(session);
+                }
+                Ok(r) if [500, 502, 503, 504].contains(&r.status().as_u16()) => {}
+                Ok(r) => {
+                    let status = r.status().as_u16();
+                    let body = read_body(r).unwrap_or_default();
+                    let text = String::from_utf8_lossy(&body[..body.len().min(1000)]).into_owned();
+                    return Err(Error::new(
+                        ErrorKind::Api,
+                        status,
+                        if text.is_empty() {
+                            "Upload refused".into()
+                        } else {
+                            text
+                        },
+                    ));
+                }
+                Err(e) if e.is_builder() => return Err(Error::transport(e)),
+                Err(_) => {}
+            }
+            sleep(Duration::from_secs(1).min(self.timeout.saturating_sub(started.elapsed())));
+        }
+        Err(Error::new(
+            ErrorKind::Timeout,
+            0,
+            "Client deadline exceeded",
+        ))
+    }
+
+    /// Replace a large file with an upload session, so every retry sends the same `upload_id`.
+    fn upload_large(&self, upload: &mut Upload<'_>, kind: UploadKind) -> Result<()> {
+        if upload.file.len() > self.large_file_threshold {
+            let session = self.upload_file(kind, upload.file, &upload.filename)?;
+            upload.upload_id = Some(session.upload_id);
+        }
+        Ok(())
     }
 
     /// Check the API key without consuming credits (`GET /auth/api-key`).
@@ -687,6 +863,11 @@ impl Client {
         embedding(b, h)
     }
     fn detect(&self, media: Media, file: &[u8], options: Options) -> Result<DetectionResult> {
+        if media != Media::Video && file.len() > SYNC_DETECTION_MAX_SIZE {
+            // Synchronous image and PDF detection stops at 95 MB; larger delivered files run as a job.
+            let receipt = self.submit_detection(media, file, options, None)?;
+            return self.get_detection_result(&receipt.request_id);
+        }
         let (b, h) = self.post(media, file, None, options)?;
         detection(&b, &h)
     }
@@ -707,8 +888,14 @@ impl Client {
             .map(|id| ("webhook_id", id))
             .into_iter()
             .collect();
-        let (path, upload, key) =
+        let (path, mut upload, key) =
             prepare(media, file, data, options, true, detect, Some(&webhook))?;
+        let kind = if detect {
+            UploadKind::Detect
+        } else {
+            media.upload_kind()
+        };
+        self.upload_large(&mut upload, kind)?;
         let (bytes, _) = self.media_request(path, Some(upload), key, true, detect)?;
         serde_json::from_slice(&bytes).map_err(|e| Error::decode(202, e))
     }
@@ -723,7 +910,13 @@ impl Client {
         let detect = data.is_none();
         // Embedding and video detection are durable jobs; image/PDF detection is synchronous.
         let durable = !detect || media == Media::Video;
-        let (path, upload, key) = prepare(media, file, data, options, durable, detect, None)?;
+        let (path, mut upload, key) = prepare(media, file, data, options, durable, detect, None)?;
+        let kind = if detect {
+            UploadKind::Detect
+        } else {
+            media.upload_kind()
+        };
+        self.upload_large(&mut upload, kind)?;
         self.media_request(
             path,
             Some(upload),
@@ -759,8 +952,13 @@ impl Client {
         while started.elapsed() < self.timeout {
             let url = format!("{}/{}", self.base, path);
             let mut req = if let Some(ref up) = upload {
-                let part = multipart::Part::bytes(up.file.to_vec()).file_name(up.filename.clone());
-                let mut form = multipart::Form::new().part("file", part);
+                let mut form = match up.upload_id {
+                    Some(ref id) => multipart::Form::new().text("upload_id", id.clone()),
+                    None => multipart::Form::new().part(
+                        "file",
+                        multipart::Part::bytes(up.file.to_vec()).file_name(up.filename.clone()),
+                    ),
+                };
                 if let Some(ref value) = up.data {
                     form = form.text("data", value.clone())
                 }
@@ -934,8 +1132,16 @@ fn prepare<'a>(
     // `Some` selects the `/async` endpoint with these extra query pairs.
     async_query: Option<&[(&str, &str)]>,
 ) -> Result<(String, Upload<'a>, Option<String>)> {
-    if file.is_empty() || file.len() > MAX_FILE_SIZE {
-        return Err(Error::input("file must contain 1 byte to 50 MB"));
+    let limit = if detect {
+        MAX_DETECTION_FILE_SIZE
+    } else {
+        MAX_FILE_SIZE
+    };
+    if file.is_empty() || file.len() > limit {
+        return Err(Error::input(format!(
+            "file must contain 1 byte to {} MB",
+            limit / (1024 * 1024)
+        )));
     }
     let mut key = options.idempotency_key.filter(|k| !k.is_empty());
     if let Some(ref k) = key
@@ -982,6 +1188,7 @@ fn prepare<'a>(
             .filter(|f| !f.is_empty())
             .unwrap_or_else(|| media.default_filename().into()),
         data,
+        upload_id: None,
     };
     Ok((path, upload, key))
 }
@@ -1098,8 +1305,8 @@ mod tests {
 
     #[test]
     fn user_agent_carries_version() {
-        assert_eq!(VERSION, "1.0.0");
-        assert_eq!(USER_AGENT, "etchv-rust/1.0.0");
+        assert_eq!(VERSION, "1.1.0");
+        assert_eq!(USER_AGENT, "etchv-rust/1.1.0");
     }
 
     #[test]
