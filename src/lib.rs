@@ -54,11 +54,19 @@ use std::{
 };
 
 mod assets;
+mod batches;
 mod error;
+mod signed;
 mod storage;
 mod webhooks;
 
 pub use assets::{Asset, AssetListOptions, AssetPage};
+pub use batches::{
+    Batch, BatchCounts, BatchCredits, BatchFile, BatchItem, BatchItemResult, BatchItemState,
+    BatchItemStatus, BatchOptions, BatchPage, BatchResults, BatchStatus, BatchUpload, BatchZipItem,
+    DEFAULT_BATCH_WAIT, DEFAULT_UPLOAD_CONCURRENCY, MAX_BATCH_ARCHIVE_SIZE, MAX_BATCH_ITEMS,
+    MAX_BATCH_ZIP_SIZE,
+};
 pub use error::{Error, ErrorKind, Result};
 pub use storage::{
     NewStorageDestination, StorageAttempt, StorageDelivery, StorageDeliveryPage,
@@ -483,6 +491,10 @@ pub struct Client {
     base: String,
     timeout: Duration,
     http: Http,
+    /// For long downloads: its client-level timeout bounds the wait for
+    /// response headers and then each body read on its own, never the whole
+    /// body (a per-request `.timeout` would be a total deadline).
+    streaming: Http,
     large_file_threshold: usize,
 }
 
@@ -543,6 +555,14 @@ fn rate_limit_delay(status: u16, headers: &HeaderMap) -> Option<Duration> {
         .flatten()
         .map(|seconds| Duration::from_secs_f64(seconds.clamp(0.0, 86_400.0)))
 }
+/// Same rule as the base URL: HTTPS, or HTTP only for a local test server.
+fn signed_url_ok(url: &str) -> bool {
+    reqwest::Url::parse(url).ok().is_some_and(|u| {
+        u.scheme() == "https"
+            || (u.scheme() == "http"
+                && matches!(u.host_str(), Some("localhost" | "127.0.0.1" | "[::1]")))
+    })
+}
 fn with_query(path: &str, pairs: &[(&str, &str)]) -> String {
     if pairs.is_empty() {
         return path.to_owned();
@@ -601,9 +621,14 @@ impl Client {
         let mut key = HeaderValue::from_str(&key)
             .map_err(|_| Error::input("API key contains invalid characters"))?;
         key.set_sensitive(true);
-        let http = Http::builder()
-            .user_agent(USER_AGENT)
-            .redirect(reqwest::redirect::Policy::none())
+        let builder = || {
+            Http::builder()
+                .user_agent(USER_AGENT)
+                .redirect(reqwest::redirect::Policy::none())
+        };
+        let http = builder().build().map_err(Error::transport)?;
+        let streaming = builder()
+            .timeout(timeout)
             .build()
             .map_err(Error::transport)?;
         Ok(Self {
@@ -611,6 +636,7 @@ impl Client {
             base: base.trim_end_matches('/').into(),
             timeout,
             http,
+            streaming,
             large_file_threshold: LARGE_FILE_THRESHOLD,
         })
     }
@@ -631,8 +657,10 @@ impl Client {
     /// above the large-file threshold.
     ///
     /// The signed URL carries its own authorization; the API key is never sent
-    /// to it. Transport errors and server errors on the `PUT` are retried until
-    /// the client deadline.
+    /// to it. The `PUT` fails only when no bytes move (and no response
+    /// arrives) for the client timeout, so a slow link is never cut off while
+    /// the upload progresses. Transport errors, stalls and server errors are
+    /// retried for up to the client timeout after the first failure.
     pub fn upload_file(
         &self,
         kind: UploadKind,
@@ -642,65 +670,23 @@ impl Client {
         if file.is_empty() {
             return Err(Error::input("file must contain at least 1 byte"));
         }
-        let started = Instant::now();
         let created: CreatedUpload = self.call_json(
             Method::POST,
             "uploads",
             Some(serde_json::json!({"kind": kind.as_str(), "filename": filename, "size": file.len()})),
         )?;
-        // Same rule as the base URL: HTTPS, or HTTP only for a local test server.
-        let target = reqwest::Url::parse(&created.upload.url).ok();
-        let secure = target.as_ref().is_some_and(|u| {
-            u.scheme() == "https"
-                || (u.scheme() == "http"
-                    && matches!(u.host_str(), Some("localhost" | "127.0.0.1" | "[::1]")))
-        });
-        if created.upload.method != "PUT" || !secure {
+        if created.upload.method != "PUT" || !signed_url_ok(&created.upload.url) {
             return Err(Error::response(201, "Invalid upload session response"));
         }
-        while started.elapsed() < self.timeout {
-            let remaining = self
-                .timeout
-                .saturating_sub(started.elapsed())
-                .max(Duration::from_millis(1));
-            let response = self
-                .http
-                .put(&created.upload.url)
-                .header("Content-Type", "application/octet-stream")
-                .body(file.to_vec())
-                .timeout(remaining)
-                .send();
-            match response {
-                Ok(r) if r.status().as_u16() == 200 => {
-                    let mut session = created.session;
-                    session.status = "received".into();
-                    return Ok(session);
-                }
-                Ok(r) if [500, 502, 503, 504].contains(&r.status().as_u16()) => {}
-                Ok(r) => {
-                    let status = r.status().as_u16();
-                    let body = read_body(r).unwrap_or_default();
-                    let text = String::from_utf8_lossy(&body[..body.len().min(1000)]).into_owned();
-                    return Err(Error::new(
-                        ErrorKind::Api,
-                        status,
-                        if text.is_empty() {
-                            "Upload refused".into()
-                        } else {
-                            text
-                        },
-                    ));
-                }
-                Err(e) if e.is_builder() => return Err(Error::transport(e)),
-                Err(_) => {}
-            }
-            sleep(Duration::from_secs(1).min(self.timeout.saturating_sub(started.elapsed())));
-        }
-        Err(Error::new(
-            ErrorKind::Timeout,
-            0,
-            "Client deadline exceeded",
-        ))
+        // One copy shared by every attempt.
+        let shared: std::sync::Arc<[u8]> = file.into();
+        let length = file.len() as u64;
+        self.put_signed(&created.upload.url, &|| {
+            Ok((Box::new(std::io::Cursor::new(shared.clone())), length))
+        })?;
+        let mut session = created.session;
+        session.status = "received".into();
+        Ok(session)
     }
 
     /// Replace a large file with an upload session, so every retry sends the same `upload_id`.
@@ -1305,8 +1291,8 @@ mod tests {
 
     #[test]
     fn user_agent_carries_version() {
-        assert_eq!(VERSION, "1.1.0");
-        assert_eq!(USER_AGENT, "etchv-rust/1.1.0");
+        assert_eq!(VERSION, "1.2.0");
+        assert_eq!(USER_AGENT, "etchv-rust/1.2.0");
     }
 
     #[test]

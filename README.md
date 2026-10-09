@@ -50,6 +50,69 @@ let upload = client.upload_file(UploadKind::Detect, &delivered, "delivered.tiff"
 upload.upload_id; // send as the upload_id form field instead of file
 ```
 
+## Many files at once
+
+Submit up to 100 files in one batch, each with its own forensic data:
+
+```rust
+use etchv::{BatchItem, BatchOptions};
+use serde_json::json;
+use std::time::Duration;
+
+let items: Vec<BatchItem> = std::fs::read_dir("in")?
+    .map(|entry| {
+        let path = entry?.path();
+        let stem = path.file_stem().unwrap().to_string_lossy().into_owned();
+        Ok(BatchItem::from_path(path, json!({"recipient": stem})))
+    })
+    .collect::<std::io::Result<_>>()?;
+let batch = client.submit_batch(&items, BatchOptions::new().archive(true))?;
+
+// Waits up to 30 minutes for the batch to finish, then downloads each result in turn.
+for item in client.batch_results(&batch.batch_id, Duration::from_secs(30 * 60))? {
+    let item = item?;
+    match item.result {
+        Some(result) => std::fs::write(format!("out/{}", item.filename), &result.bytes)?,
+        None => eprintln!("{}: {:?}", item.filename, item.error_code), // credits refunded
+    }
+}
+let mut zip = std::fs::File::create("out.zip")?;
+client.download_batch_archive_to(&batch.batch_id, &mut zip, Duration::from_secs(10 * 60))?;
+```
+
+`submit_batch` creates the batch, uploads each file straight to its own signed upload URL (the API key
+is never sent there), up to 4 at a time (`BatchOptions::upload_concurrency`), and starts it. Files can
+be bytes (`BatchItem::new`) or paths (`BatchItem::from_path`, streamed from disk). The batch's
+idempotency key (generated, or `BatchOptions::idempotency_key`) makes resubmitting safe: the same key
+returns the same batch and uploads only the files it has not received. Files that are rejected or fail
+are never charged. Upload URLs last 6 hours and a batch must start within 24 hours. Results, and the
+archive of every result (`archive(true)`, up to 1 GB), stay available for 24 hours.
+
+`wait_for_batch`, `batch_results` and the archive downloads wait as long as their timeout (zero means
+1 hour), polling as often as the API's `Retry-After` allows and at most once a second. File uploads
+and archive downloads fail only when no data moves for the client timeout, however long they take in
+all, so large files on slow links are fine; time your own `Write` spends saving the archive does not
+count. `download_batch_archive` returns the zip in memory; `download_batch_archive_to` streams it into
+any `Write`. Archive errors carry `code()`: `batch_not_started`, `archive_not_requested`,
+`archive_too_large` or `archive_unavailable` (HTTP 409); HTTP 410 means it expired. Resubmitting a
+batch that expired before it started fails with HTTP 410 and `batch_expired`; use a new idempotency key.
+`cancel_batch` refunds files that have not started; they end with `error_code` `cancelled`, and files
+already running finish. Canceled batches report `BatchStatus::Cancelled`.
+
+Files already together in a zip of up to 55 MB can go in one request:
+
+```rust
+use etchv::{BatchOptions, BatchZipItem};
+
+let batch = client.submit_batch_zip(
+    &std::fs::read("contracts.zip")?,
+    &[BatchZipItem::new("contracts/acme.pdf", serde_json::json!({"recipient": "acme"}))],
+    BatchOptions::new(),
+)?;
+```
+
+Also: `get_batch`, `cancel_batch` (files not yet running are refunded) and `list_batches`.
+
 ## GPU processing
 
 Business and Enterprise plans can request GPU processing for any embed, detect or async submission
@@ -86,6 +149,7 @@ Detection uses `submit_detection`, `get_detection_job` and `get_detection_result
 ## Also included
 
 - API key check: `get_api_key_info`
+- Batches: `submit_batch`, `submit_batch_zip`, `get_batch`, `wait_for_batch`, `batch_results`, `download_batch_archive`, `download_batch_archive_to`, `cancel_batch`, `list_batches`
 - Assets: `list_assets`, `get_asset`, `update_asset`, `delete_asset`, `delete_assets`, `download_asset`
 - Webhooks: `list_webhooks`, `create_webhook`, `update_webhook`, `delete_webhook`, `list_webhook_deliveries`, `redeliver_webhook`, and `etchv::verify_webhook_signature`
 - Customer storage: `list_storage_destinations`, `create_storage_destination`, `update_storage_destination`, `delete_storage_destination`, `verify_storage_destination`, `list_storage_deliveries`, `create_storage_delivery`, `get_storage_delivery`, `retry_storage_delivery`, `download_storage_delivery`

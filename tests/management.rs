@@ -25,7 +25,7 @@ fn serve(count: usize, handler: Handler) -> (String, thread::JoinHandle<()>) {
                     .map(|h| h.value.to_string())
             };
             assert_eq!(header("X-API-Key").as_deref(), Some("test-key"));
-            assert_eq!(header("User-Agent").as_deref(), Some("etchv-rust/1.1.0"));
+            assert_eq!(header("User-Agent").as_deref(), Some("etchv-rust/1.2.0"));
             let method = req.method().as_str().to_owned();
             let url = req.url().to_owned();
             let mut body = String::new();

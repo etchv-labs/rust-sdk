@@ -70,6 +70,29 @@ impl Error {
         err.source = Some(Box::new(e));
         err
     }
+    /// Wrap `cause` with a new description, keeping everything else: kind,
+    /// status, `code()`, `limit()`, request ID, idempotency key and `retry_after`.
+    pub(crate) fn context(cause: Error, detail: String) -> Self {
+        // `message()`, `code()` and `limit()` read API errors from a JSON `detail` object.
+        let detail = if cause.kind == ErrorKind::Api {
+            let mut structured = serde_json::json!({ "message": detail });
+            if let Some(code) = cause.code() {
+                structured["code"] = code.into();
+            }
+            if let Some(limit) = cause.limit() {
+                structured["limit"] = limit.into();
+            }
+            serde_json::json!({ "detail": structured }).to_string()
+        } else {
+            detail
+        };
+        let mut err = Self::new(cause.kind, cause.status_code, detail);
+        err.request_id = cause.request_id.clone();
+        err.idempotency_key = cause.idempotency_key.clone();
+        err.retry_after = cause.retry_after;
+        err.source = Some(Box::new(cause));
+        err
+    }
     pub(crate) fn decode(status: u16, e: serde_json::Error) -> Self {
         let mut err = Self::response(status, format!("Invalid response JSON: {e}"));
         err.source = Some(Box::new(e));
@@ -176,3 +199,32 @@ impl std::error::Error for Error {
 
 /// Result alias used throughout the SDK.
 pub type Result<T, E = Error> = std::result::Result<T, E>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn context_keeps_the_api_code_and_everything_else() {
+        let mut cause = Error::new(
+            ErrorKind::Api,
+            429,
+            r#"{"detail":{"code":"concurrency_limited","message":"busy","limit":3}}"#,
+        );
+        cause.request_id = Some("req_1".into());
+        cause.idempotency_key = Some("key_00001".into());
+        cause.retry_after = Some(Duration::from_secs(2));
+        let err = Error::context(cause, "Upload of item 0 failed: busy".into());
+        assert_eq!((err.kind, err.status_code), (ErrorKind::Api, 429));
+        assert_eq!(err.code().as_deref(), Some("concurrency_limited"));
+        assert_eq!(err.limit(), Some(3));
+        assert_eq!(
+            err.message().as_deref(),
+            Some("Upload of item 0 failed: busy")
+        );
+        assert_eq!(err.request_id.as_deref(), Some("req_1"));
+        assert_eq!(err.idempotency_key.as_deref(), Some("key_00001"));
+        assert_eq!(err.retry_after, Some(Duration::from_secs(2)));
+        assert!(std::error::Error::source(&err).is_some());
+    }
+}
