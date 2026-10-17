@@ -311,7 +311,7 @@ impl Options {
 pub struct EmbedResult {
     /// Watermarked file bytes in the original format.
     pub bytes: Vec<u8>,
-    /// 64-character hexadecimal watermark ID. Store it with your record.
+    /// Unique forensic watermark ID for this file, as 64 hexadecimal characters. Store it with your record.
     pub watermark_id: String,
     /// Etchv request ID.
     pub request_id: Option<String>,
