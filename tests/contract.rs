@@ -50,6 +50,8 @@ fn contract() {
         .unwrap();
         assert!(d.watermarked);
         assert_eq!(d.units.len(), 2);
+        let part = (ext == "docx" || ext == "pptx").then_some("media/image1.png");
+        assert_eq!(d.units[0].part.as_deref(), part);
     }
     for scenario in [
         "retry",

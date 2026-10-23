@@ -106,9 +106,9 @@ pub const MAX_DOWNLOAD_SIZE: usize = 256 * 1024 * 1024;
 pub enum Media {
     /// PNG, JPEG, WebP, GIF, TIFF, BMP, PPM, PSD or PSB (`/watermarks/images`).
     Image,
-    /// PDF (`/watermarks/documents`).
+    /// PDF, DOCX or PPTX (`/watermarks/documents`).
     Document,
-    /// MP4 or MOV with H.264 video (`/watermarks/videos`).
+    /// MP4, MOV, WebM, Matroska, MPEG or AVI video (`/watermarks/videos`).
     Video,
 }
 
@@ -142,7 +142,7 @@ impl Media {
 pub enum UploadKind {
     /// Embedding an image (up to 50 MB).
     Image,
-    /// Embedding a PDF (up to 20 MB).
+    /// Embedding a PDF, DOCX or PPTX (up to 20 MB).
     Document,
     /// Embedding a video (up to 20 MB).
     Video,
@@ -346,7 +346,7 @@ impl fmt::Debug for EmbedResult {
     }
 }
 
-/// Detection result for one frame, page or composite.
+/// Detection result for one frame, page, composite or DOCX/PPTX unit.
 #[derive(Debug, Clone, Deserialize)]
 #[non_exhaustive]
 pub struct DetectionUnit {
@@ -358,6 +358,9 @@ pub struct DetectionUnit {
     pub confidence: f64,
     /// Decoded watermark ID, when found.
     pub watermark_id: Option<String>,
+    /// DOCX/PPTX only: the package part that carries this unit.
+    #[serde(default)]
+    pub part: Option<String>,
 }
 
 /// Result of a detection call.
@@ -721,7 +724,7 @@ impl Client {
     pub fn embed_image(&self, file: &[u8], data: &Value, options: Options) -> Result<EmbedResult> {
         self.embed(Media::Image, file, data, options)
     }
-    /// Embed forensic `data` in a PDF and wait for the verified result.
+    /// Embed forensic `data` in a PDF, DOCX or PPTX and wait for the verified result.
     pub fn embed_document(
         &self,
         file: &[u8],
@@ -738,7 +741,7 @@ impl Client {
     pub fn detect_image(&self, file: &[u8], options: Options) -> Result<DetectionResult> {
         self.detect(Media::Image, file, options)
     }
-    /// Detect watermarks in each page of a PDF. Synchronous and not retried automatically.
+    /// Detect watermarks in a PDF (each page), DOCX or PPTX. Synchronous and not retried automatically.
     pub fn detect_document(&self, file: &[u8], options: Options) -> Result<DetectionResult> {
         self.detect(Media::Document, file, options)
     }
@@ -1267,6 +1270,8 @@ fn detection(b: &[u8], h: &HeaderMap) -> Result<DetectionResult> {
     Ok(d)
 }
 
+const EBML: &[u8] = b"\x1a\x45\xdf\xa3";
+
 fn extension(b: &[u8], mime: &str) -> Option<&'static str> {
     match mime {
         "image/png" if b.starts_with(b"\x89PNG\r\n\x1a\n") => Some("png"),
@@ -1281,6 +1286,23 @@ fn extension(b: &[u8], mime: &str) -> Option<&'static str> {
         "application/pdf" if b.starts_with(b"%PDF-") => Some("pdf"),
         "video/mp4" if b.get(4..8) == Some(b"ftyp") => Some("mp4"),
         "video/quicktime" if b.get(4..8) == Some(b"ftyp") => Some("mov"),
+        "video/webm" if b.starts_with(EBML) => Some("webm"),
+        "video/x-matroska" if b.starts_with(EBML) => Some("mkv"),
+        "video/mpeg" if b.starts_with(b"\0\0\x01\xba") => Some("mpg"),
+        "video/mp2t" if b.len() > 376 && b[0] == 0x47 && b[188] == 0x47 && b[376] == 0x47 => {
+            Some("ts")
+        }
+        "video/x-msvideo" if b.starts_with(b"RIFF") && b.get(8..12) == Some(b"AVI ") => Some("avi"),
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            if b.starts_with(b"PK\x03\x04") =>
+        {
+            Some("docx")
+        }
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+            if b.starts_with(b"PK\x03\x04") =>
+        {
+            Some("pptx")
+        }
         _ => None,
     }
 }
@@ -1291,8 +1313,8 @@ mod tests {
 
     #[test]
     fn user_agent_carries_version() {
-        assert_eq!(VERSION, "1.2.0");
-        assert_eq!(USER_AGENT, "etchv-rust/1.2.0");
+        assert_eq!(VERSION, "1.3.0");
+        assert_eq!(USER_AGENT, "etchv-rust/1.3.0");
     }
 
     #[test]

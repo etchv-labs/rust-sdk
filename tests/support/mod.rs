@@ -131,6 +131,9 @@ impl TestServer {
                         if scenario == "bad-units" {
                             v["units"][1]["index"] = json!(4)
                         }
+                        if ext == "docx" || ext == "pptx" {
+                            v["units"][0]["part"] = json!("media/image1.png")
+                        }
                         Some(v)
                     }
                     _ => None,

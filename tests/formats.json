@@ -70,5 +70,47 @@
     "mime": "video/quicktime",
     "media": "videos",
     "base64": "AAAAGGZ0eXBxdCAgAHRlc3T/Ynl0ZXM="
+  },
+  {
+    "extension": "webm",
+    "mime": "video/webm",
+    "media": "videos",
+    "base64": "GkXfowB0ZXN0/2J5dGVz"
+  },
+  {
+    "extension": "mkv",
+    "mime": "video/x-matroska",
+    "media": "videos",
+    "base64": "GkXfowB0ZXN0/2J5dGVz"
+  },
+  {
+    "extension": "mpg",
+    "mime": "video/mpeg",
+    "media": "videos",
+    "base64": "AAABugB0ZXN0/2J5dGVz"
+  },
+  {
+    "extension": "ts",
+    "mime": "video/mp2t",
+    "media": "videos",
+    "base64": "RwB0ZXN0/2J5dGVzAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABHAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEc="
+  },
+  {
+    "extension": "avi",
+    "mime": "video/x-msvideo",
+    "media": "videos",
+    "base64": "UklGRgAAAABBVkkgAHRlc3T/Ynl0ZXM="
+  },
+  {
+    "extension": "docx",
+    "mime": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "media": "documents",
+    "base64": "UEsDBHdvcmQvAHRlc3T/Ynl0ZXM="
+  },
+  {
+    "extension": "pptx",
+    "mime": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    "media": "documents",
+    "base64": "UEsDBHBwdC8AdGVzdP9ieXRlcw=="
   }
 ]

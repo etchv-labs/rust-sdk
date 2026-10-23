@@ -32,14 +32,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-Image uploads are limited to 50 MB; PDF and video uploads to 20 MB. Detection takes the files Etchv
-delivered: up to 192 MB for images, 64 MB for PDFs and 100 MB for video.
+Image uploads are limited to 50 MB; document and video uploads to 20 MB. Detection takes the files Etchv
+delivered: up to 192 MB for images, 64 MB for PDFs and 100 MB for DOCX, PPTX and
+video.
 
 ## Large files
 
 Files over 40 MB are uploaded once to a signed URL and then referenced by ID, so the request never carries
 the file. This is automatic in every embed, detect and submit method; retries reuse the same upload. Image
-and PDF detection above 95 MB runs as a background job and the call waits for it. Change the threshold
+and document detection above 95 MB runs as a background job and the call waits for it. Change the threshold
 with `with_large_file_threshold`, or upload explicitly:
 
 ```rust
