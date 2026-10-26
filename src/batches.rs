@@ -1,8 +1,8 @@
 //! Batches: up to 100 files per call, each with its own forensic data.
 use crate::{
-    Accelerator, Client, EmbedResult, Error, ErrorKind, Result, check_id, embed_data, header,
-    rate_limit_delay, read_body, retry_after, signed::UploadBody, signed_url_ok,
-    valid_idempotency_key, with_query,
+    Accelerator, ActiveContent, Client, EmbedResult, Error, ErrorKind, Result, check_id,
+    embed_data, header, rate_limit_delay, read_body, retry_after, signed::UploadBody,
+    signed_url_ok, valid_idempotency_key, with_query,
 };
 use reqwest::{Method, blocking::multipart, header::HeaderMap};
 use serde::Deserialize;
@@ -163,6 +163,9 @@ pub struct BatchOptions {
     pub accelerator: Option<Accelerator>,
     /// Verified customer storage destination (`dst_…`) for every result. Not with `archive`.
     pub storage_destination_id: Option<String>,
+    /// What every PDF keeps of its scripts and actions. With
+    /// [`ActiveContent::RemoveAutoRun`] every file must be a PDF.
+    pub active_content: Option<ActiveContent>,
     /// `Idempotency-Key` (8–128 letters, digits, `-` or `_`); generated when absent.
     /// Submitting again with the same key returns the same batch and resumes its uploads.
     pub idempotency_key: Option<String>,
@@ -195,6 +198,12 @@ impl BatchOptions {
         self.storage_destination_id = Some(id.into());
         self
     }
+    /// Keep or remove what a PDF viewer runs by itself, for every file.
+    /// [`ActiveContent::RemoveAutoRun`] needs every file to be a PDF.
+    pub fn active_content(mut self, active_content: ActiveContent) -> Self {
+        self.active_content = Some(active_content);
+        self
+    }
     /// Set the idempotency key.
     pub fn idempotency_key(mut self, key: impl Into<String>) -> Self {
         self.idempotency_key = Some(key.into());
@@ -220,6 +229,9 @@ impl BatchOptions {
         if let Some(ref id) = self.storage_destination_id {
             check_id(id, "dst_", 32, "storage destination")?;
             body.insert("storage_destination_id".into(), json!(id));
+        }
+        if let Some(active_content) = self.active_content {
+            body.insert("active_content".into(), json!(active_content.as_str()));
         }
         if self.upload_concurrency == Some(0) {
             return Err(Error::input("upload concurrency must be at least 1"));
@@ -442,7 +454,7 @@ pub struct Batch {
     #[serde(default)]
     pub archive: bool,
     /// Processing hardware requested for every file.
-    #[serde(default, deserialize_with = "crate::accelerator_field")]
+    #[serde(default, deserialize_with = "crate::wire_field")]
     pub accelerator: Option<Accelerator>,
     /// Webhook endpoint notified when the batch ends.
     #[serde(default)]
@@ -450,6 +462,9 @@ pub struct Batch {
     /// Customer storage destination for every result.
     #[serde(default)]
     pub storage_destination_id: Option<String>,
+    /// What every PDF keeps of its scripts and actions; `None` when not reported.
+    #[serde(default, deserialize_with = "crate::wire_field")]
+    pub active_content: Option<ActiveContent>,
     /// File counts.
     #[serde(default)]
     pub counts: BatchCounts,

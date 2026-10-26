@@ -85,11 +85,14 @@ pub const USER_AGENT: &str = concat!("etchv-rust/", env!("CARGO_PKG_VERSION"));
 pub const DEFAULT_BASE_URL: &str = "https://api.etchv.com";
 /// Default client deadline used by [`Client::new`].
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(120);
-/// Largest file accepted for embedding (50 MB). The API rejects PDFs and videos
-/// over 20 MB with status 413.
+/// Largest file accepted for embedding (50 MB, for images and PDFs). The API
+/// rejects DOCX, PPTX and videos over 20 MB with status 413. A PDF has 1 to 2,000
+/// pages, and its watermarked copy must fit in 95 MB with 48 KB per page, so a
+/// 2,000-page PDF can be up to about 1 MB.
 pub const MAX_FILE_SIZE: usize = 50 * 1024 * 1024;
 /// Largest file accepted for detection (192 MB): detection checks files Etchv
-/// delivered, up to 192 MB for images, 64 MB for PDFs and 100 MB for video.
+/// delivered, up to 192 MB for images, 95 MB for PDFs and 100 MB for DOCX,
+/// PPTX and video.
 pub const MAX_DETECTION_FILE_SIZE: usize = 192 * 1024 * 1024;
 /// Default [`Client::with_large_file_threshold`]: files above 40 MB go through
 /// an upload session instead of the request body.
@@ -142,7 +145,7 @@ impl Media {
 pub enum UploadKind {
     /// Embedding an image (up to 50 MB).
     Image,
-    /// Embedding a PDF, DOCX or PPTX (up to 20 MB).
+    /// Embedding a PDF (up to 50 MB), DOCX or PPTX (up to 20 MB).
     Document,
     /// Embedding a video (up to 20 MB).
     Video,
@@ -217,6 +220,9 @@ impl Accelerator {
             Accelerator::Gpu => "gpu",
         }
     }
+}
+
+impl WireValue for Accelerator {
     fn parse(value: &str) -> Option<Self> {
         match value.trim().to_ascii_lowercase().as_str() {
             "cpu" => Some(Accelerator::Cpu),
@@ -232,14 +238,61 @@ impl fmt::Display for Accelerator {
     }
 }
 
+/// An option the API reports by its wire value.
+trait WireValue: Sized {
+    fn parse(value: &str) -> Option<Self>;
+}
+
 /// Lenient deserializer: missing, null or unknown values become `None`.
-fn accelerator_field<'de, D: serde::Deserializer<'de>>(
+fn wire_field<'de, D: serde::Deserializer<'de>, T: WireValue>(
     deserializer: D,
-) -> std::result::Result<Option<Accelerator>, D::Error> {
+) -> std::result::Result<Option<T>, D::Error> {
     Ok(Option::<Value>::deserialize(deserializer)?
         .as_ref()
         .and_then(Value::as_str)
-        .and_then(Accelerator::parse))
+        .and_then(T::parse))
+}
+
+/// What PDF watermarking does with scripts and actions.
+///
+/// [`Keep`](ActiveContent::Keep), the API default, returns them exactly as
+/// uploaded. [`RemoveAutoRun`](ActiveContent::RemoveAutoRun) also removes what a
+/// PDF viewer runs by itself: the open action, document and page actions,
+/// document-level JavaScript and XFA forms. Links, form fields and attachments
+/// stay. PDF only: the API refuses `RemoveAutoRun` for DOCX and PPTX.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum ActiveContent {
+    /// Keep scripts and actions as uploaded (the API default).
+    Keep,
+    /// Remove what a viewer runs by itself.
+    RemoveAutoRun,
+}
+
+impl ActiveContent {
+    /// Wire value: `keep` or `remove_auto_run`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ActiveContent::Keep => "keep",
+            ActiveContent::RemoveAutoRun => "remove_auto_run",
+        }
+    }
+}
+
+impl WireValue for ActiveContent {
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "keep" => Some(ActiveContent::Keep),
+            "remove_auto_run" => Some(ActiveContent::RemoveAutoRun),
+            _ => None,
+        }
+    }
+}
+
+impl fmt::Display for ActiveContent {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
 }
 
 /// Per-request options for watermarking and detection calls.
@@ -270,6 +323,10 @@ pub struct Options {
     /// Requested processing hardware (`accelerator` query parameter). Omitted
     /// when `None`, which uses CPU. See [`Accelerator`].
     pub accelerator: Option<Accelerator>,
+    /// What a watermarked PDF keeps of its scripts and actions
+    /// (`active_content` query parameter). Document embedding only; omitted
+    /// when `None`, which keeps them. See [`ActiveContent`].
+    pub active_content: Option<ActiveContent>,
 }
 
 impl Options {
@@ -302,6 +359,11 @@ impl Options {
     /// is ready.
     pub fn accelerator(mut self, accelerator: Accelerator) -> Self {
         self.accelerator = Some(accelerator);
+        self
+    }
+    /// Keep or remove what a PDF viewer runs by itself. Document embedding only.
+    pub fn active_content(mut self, active_content: ActiveContent) -> Self {
+        self.active_content = Some(active_content);
         self
     }
 }
@@ -380,7 +442,7 @@ pub struct DetectionResult {
     #[serde(skip)]
     pub request_id: Option<String>,
     /// Hardware that actually processed the request, when reported.
-    #[serde(default, deserialize_with = "accelerator_field")]
+    #[serde(default, deserialize_with = "wire_field")]
     pub accelerator: Option<Accelerator>,
 }
 
@@ -465,11 +527,11 @@ pub struct JobReceipt {
     #[serde(default)]
     pub storage_delivery_id: Option<String>,
     /// Hardware requested at submission.
-    #[serde(default, deserialize_with = "accelerator_field")]
+    #[serde(default, deserialize_with = "wire_field")]
     pub accelerator_requested: Option<Accelerator>,
     /// Hardware that processed (or is processing) the job, when known. Differs
     /// from `accelerator_requested` after an automatic CPU fallback.
-    #[serde(default, deserialize_with = "accelerator_field")]
+    #[serde(default, deserialize_with = "wire_field")]
     pub accelerator: Option<Accelerator>,
 }
 
@@ -725,6 +787,9 @@ impl Client {
         self.embed(Media::Image, file, data, options)
     }
     /// Embed forensic `data` in a PDF, DOCX or PPTX and wait for the verified result.
+    ///
+    /// PDFs take 1 to 2,000 pages and up to 50 MB; DOCX and PPTX up to 20 MB.
+    /// [`Options::active_content`] applies to PDFs.
     pub fn embed_document(
         &self,
         file: &[u8],
@@ -1163,6 +1228,14 @@ fn prepare<'a>(
     if let Some(accelerator) = options.accelerator {
         pairs.push(("accelerator", accelerator.as_str()));
     }
+    if let Some(active_content) = options.active_content {
+        if detect || media != Media::Document {
+            return Err(Error::input(
+                "active_content applies to PDF document embedding only",
+            ));
+        }
+        pairs.push(("active_content", active_content.as_str()));
+    }
     let path = format!(
         "watermarks/{}{}{}",
         media.segment(),
@@ -1313,8 +1386,8 @@ mod tests {
 
     #[test]
     fn user_agent_carries_version() {
-        assert_eq!(VERSION, "1.3.0");
-        assert_eq!(USER_AGENT, "etchv-rust/1.3.0");
+        assert_eq!(VERSION, "1.4.0");
+        assert_eq!(USER_AGENT, "etchv-rust/1.4.0");
     }
 
     #[test]

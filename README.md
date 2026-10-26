@@ -32,9 +32,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-Image uploads are limited to 50 MB; document and video uploads to 20 MB. Detection takes the files Etchv
-delivered: up to 192 MB for images, 64 MB for PDFs and 100 MB for DOCX, PPTX and
-video.
+Image and PDF uploads are limited to 50 MB; DOCX, PPTX and video uploads to 20 MB. A PDF has 1 to 2,000
+pages, and its watermarked copy must fit in 95 MB with 48 KB per page, so a 2,000-page PDF can be up to
+about 1 MB. Detection takes the files Etchv delivered: up to 192 MB for images, 95 MB for PDFs and 100 MB
+for DOCX, PPTX and video.
 
 ## Large files
 
@@ -87,7 +88,8 @@ be bytes (`BatchItem::new`) or paths (`BatchItem::from_path`, streamed from disk
 idempotency key (generated, or `BatchOptions::idempotency_key`) makes resubmitting safe: the same key
 returns the same batch and uploads only the files it has not received. Files that are rejected or fail
 are never charged. Upload URLs last 6 hours and a batch must start within 24 hours. Results, and the
-archive of every result (`archive(true)`, up to 1 GB), stay available for 24 hours.
+archive of every result (`archive(true)`, up to 1 GB), stay available for 24 hours. `BatchOptions` also
+takes `webhook_id`, `accelerator`, `storage_destination_id` and `active_content`, as for single files.
 
 `wait_for_batch`, `batch_results` and the archive downloads wait as long as their timeout (zero means
 1 hour), polling as often as the API's `Retry-After` allows and at most once a second. File uploads
@@ -113,6 +115,27 @@ let batch = client.submit_batch_zip(
 ```
 
 Also: `get_batch`, `cancel_batch` (files not yet running are refunded) and `list_batches`.
+
+## PDF scripts and actions
+
+A watermarked PDF keeps its scripts, actions, form fields and attachments exactly as uploaded. Pass
+`Options::new().active_content(ActiveContent::RemoveAutoRun)` to `embed_document` or
+`submit_embed(Media::Document, ...)`, or `BatchOptions::new().active_content(...)`, to also remove what a
+PDF viewer runs by itself: the open action, document and page actions, document-level JavaScript and XFA
+forms. Links, form fields and attachments stay. The SDK refuses the option for other media and detection.
+`RemoveAutoRun` is for PDFs only: the API refuses it for a DOCX or PPTX, and for a batch unless every
+file is a PDF. `Keep` is accepted for any document and any batch.
+[Scripts and actions](https://etchv.com/docs/api/documents#scripts-and-actions).
+
+```rust
+use etchv::{ActiveContent, Options};
+
+let result = client.embed_document(
+    &std::fs::read("contract.pdf")?,
+    &serde_json::json!({"recipient": "counsel-7"}),
+    Options::new().filename("contract.pdf").active_content(ActiveContent::RemoveAutoRun),
+)?;
+```
 
 ## GPU processing
 

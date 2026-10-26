@@ -1,4 +1,4 @@
-use etchv::{Accelerator, Client, Media, Options};
+use etchv::{Accelerator, ActiveContent, Client, ErrorKind, Media, Options};
 use serde_json::json;
 use std::{collections::HashMap, thread, time::Duration};
 use tiny_http::{Header, Request, Response, Server};
@@ -314,4 +314,83 @@ fn rate_limit_errors_expose_retry_after_and_code() {
     assert_eq!(err.limit(), None);
     assert_eq!(err.message().as_deref(), Some("Forbidden"));
     worker.join().unwrap();
+}
+
+#[test]
+fn active_content_is_sent_for_pdf_embedding_only() {
+    let (base, worker) = serve(
+        |req| {
+            let q = query(&req);
+            let id = "a".repeat(64);
+            match route(&req).as_str() {
+                "/watermarks/documents" => {
+                    assert_eq!(q.get("active_content").unwrap(), "remove_auto_run");
+                    assert_eq!(q.get("accelerator").unwrap(), "gpu");
+                    respond(
+                        req,
+                        200,
+                        b"%PDF-1.7\n%%EOF".to_vec(),
+                        &[
+                            ("Content-Type", "application/pdf"),
+                            ("X-Watermark-ID", id.as_str()),
+                        ],
+                    )
+                }
+                "/watermarks/documents/async" => {
+                    assert_eq!(q.get("active_content").unwrap(), "keep");
+                    respond(
+                        req,
+                        202,
+                        json!({"request_id":format!("req_{}", "b".repeat(64)),"status":"queued"})
+                            .to_string()
+                            .into_bytes(),
+                        &[],
+                    )
+                }
+                other => panic!("unexpected request {other}"),
+            }
+        },
+        2,
+    );
+    let client = Client::with_options("test-key", &base, Duration::from_secs(5)).unwrap();
+    let data = json!({"recipient":"counsel-7"});
+    let result = client
+        .embed_document(
+            b"%PDF-1.7\n",
+            &data,
+            Options::new()
+                .active_content(ActiveContent::RemoveAutoRun)
+                .accelerator(Accelerator::Gpu),
+        )
+        .unwrap();
+    assert_eq!(result.content_type, "application/pdf");
+    client
+        .submit_embed(
+            Media::Document,
+            b"%PDF-1.7\n",
+            &data,
+            Options::new().active_content(ActiveContent::Keep),
+            None,
+        )
+        .unwrap();
+    worker.join().unwrap();
+
+    // Other media and detection are refused before any request.
+    let offline =
+        Client::with_options("test-key", "http://127.0.0.1:9", Duration::from_secs(1)).unwrap();
+    let remove = || Options::new().active_content(ActiveContent::RemoveAutoRun);
+    for error in [
+        offline.embed_image(PNG, &data, remove()).unwrap_err(),
+        offline
+            .submit_embed(Media::Video, b"video", &data, remove(), None)
+            .unwrap_err(),
+        offline
+            .detect_document(b"%PDF-1.7\n", remove())
+            .unwrap_err(),
+    ] {
+        assert_eq!(error.kind, ErrorKind::InvalidInput);
+        assert!(error.to_string().contains("active_content"));
+    }
+    assert_eq!(ActiveContent::RemoveAutoRun.to_string(), "remove_auto_run");
+    assert_eq!(ActiveContent::Keep.as_str(), "keep");
 }

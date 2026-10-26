@@ -1,6 +1,6 @@
 use etchv::{
-    BatchItem, BatchItemState, BatchOptions, BatchStatus, BatchZipItem, Client, ErrorKind,
-    UploadKind,
+    ActiveContent, BatchItem, BatchItemState, BatchOptions, BatchStatus, BatchZipItem, Client,
+    ErrorKind, UploadKind,
 };
 use serde_json::{Value, json};
 use std::{
@@ -1003,4 +1003,60 @@ fn time_spent_writing_to_the_sink_is_not_idle_time() {
     worker.join().unwrap();
     assert_eq!(written, sink.0.len() as u64);
     assert!(sink.0.starts_with(b"PK"));
+}
+
+#[test]
+fn active_content_applies_to_every_file_of_a_batch() {
+    let pdf = b"%PDF-1.7\n".to_vec();
+    let fake = Fake::new(|seen, origin, _| match path(seen) {
+        // Every file is a PDF, as the API requires with remove_auto_run.
+        "/watermarks/batches" => {
+            let mut reply = ok_json(batch(
+                "draft",
+                json!([
+                    pending(origin, 0, "acme.pdf", 9),
+                    pending(origin, 1, "bolt.pdf", 9)
+                ]),
+            ));
+            reply.0 = 201;
+            reply
+        }
+        "/watermarks/batches/zip" => {
+            let mut reply = ok_json(batch("starting", json!([])));
+            reply.0 = 202;
+            reply
+        }
+        p if p == format!("/watermarks/batches/{BATCH}") => {
+            let mut reported = batch("processing", json!([]));
+            reported["active_content"] = json!("remove_auto_run");
+            ok_json(reported)
+        }
+        _ => flow(seen, origin),
+    });
+    let client = fake.client();
+    let items = vec![
+        BatchItem::new("acme.pdf", pdf.clone(), json!({"recipient": "acme"})),
+        BatchItem::new("bolt.pdf", pdf, json!({"recipient": "bolt"})),
+    ];
+    let options = || BatchOptions::new().active_content(ActiveContent::RemoveAutoRun);
+    let started = client.submit_batch(&items, options()).unwrap();
+    client
+        .submit_batch_zip(
+            b"PK\x03\x04zip",
+            &[BatchZipItem::new("in/a.pdf", json!({"recipient": "acme"}))],
+            options(),
+        )
+        .unwrap();
+    let reported = client.get_batch(BATCH).unwrap();
+    let seen = fake.finish();
+    // The fake reports no option on create and start; an unknown or missing value is None.
+    assert_eq!(started.active_content, None);
+    assert_eq!(reported.active_content, Some(ActiveContent::RemoveAutoRun));
+    let create: Value = serde_json::from_slice(&seen[0].body).unwrap();
+    assert_eq!(create["active_content"], "remove_auto_run");
+    let zip = seen
+        .iter()
+        .find(|s| path(s) == "/watermarks/batches/zip")
+        .unwrap();
+    assert!(String::from_utf8_lossy(&zip.body).contains(r#""active_content":"remove_auto_run""#));
 }
