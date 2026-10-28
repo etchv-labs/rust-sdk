@@ -170,6 +170,36 @@ if client.get_job(&job.request_id)?.status == JobStatus::Succeeded {
 Resending the same request with the same idempotency key returns the existing job without another charge.
 Detection uses `submit_detection`, `get_detection_job` and `get_detection_result`.
 
+## Traceable links
+
+Share one file so each recipient downloads their own watermarked copy. Use the
+source asset of a file you've watermarked; send the returned `url` yourself.
+
+```rust
+use etchv::NewLink;
+
+let source = result.source_asset_id.as_deref().expect("the original of a watermarked file");
+let link = client.create_link(
+    &NewLink::new(source, "Board pack, October")
+        .recipients(["alex@example.com", "sam@example.com"])
+        .download_limit(3),
+)?;
+println!("{}", link.url);
+```
+
+Give `.allowed_domains(["example.com"])` instead of `.recipients(...)` to let
+anyone at those domains open it. `create_link` retries with one idempotency key,
+so a retry returns the same link; without the credits for the copies it fails
+with HTTP 402 and `code()` `insufficient_credits`. `estimate_link` takes the same
+`NewLink` and reports the credits the copies would take without creating
+anything. Also `get_link` (each recipient, their opens and their copy),
+`list_links`, `list_link_events` and `revoke_link`.
+
+When a detected file is one of your links' copies, `DetectionResult::copy` names
+the link, the recipient and when they first opened it (needs `links:read`);
+`DetectionResult::asset` names any other watermarked asset of yours (needs
+`assets:read`). See https://etchv.com/docs/api/links.
+
 ## Also included
 
 - API key check: `get_api_key_info`

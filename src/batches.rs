@@ -617,7 +617,7 @@ impl Iterator for BatchResults<'_> {
 }
 
 /// Request body of a batch call.
-enum Payload<'a> {
+pub(crate) enum Payload<'a> {
     None,
     Json(&'a Value),
     Zip { zip: &'a [u8], manifest: &'a str },
@@ -625,14 +625,14 @@ enum Payload<'a> {
 
 /// How a batch call treats statuses other than success.
 #[derive(Clone, Copy)]
-struct Policy {
+pub(crate) struct Policy {
     /// Retry HTTP 503 (not for creation, where it means uploads are unavailable).
     retry_503: bool,
     /// Largest response body read.
     limit: usize,
 }
 
-const READ: Policy = Policy {
+pub(crate) const READ: Policy = Policy {
     retry_503: true,
     limit: crate::MAX_DOWNLOAD_SIZE,
 };
@@ -1099,7 +1099,7 @@ impl Client {
         )
     }
 
-    fn batch_json<T: serde::de::DeserializeOwned>(
+    pub(crate) fn batch_json<T: serde::de::DeserializeOwned>(
         &self,
         method: Method,
         path: String,
@@ -1113,7 +1113,8 @@ impl Client {
 
     /// One batch request, retrying transport failures and HTTP 429, 502, 504
     /// (and 503 when allowed) with the same idempotency key until the client
-    /// deadline. Every batch call is safe to repeat.
+    /// deadline. Every batch call is safe to repeat, as is link creation
+    /// with its idempotency key.
     fn batch_call(
         &self,
         method: Method,

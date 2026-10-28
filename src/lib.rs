@@ -56,6 +56,7 @@ use std::{
 mod assets;
 mod batches;
 mod error;
+mod links;
 mod signed;
 mod storage;
 mod webhooks;
@@ -68,6 +69,10 @@ pub use batches::{
     MAX_BATCH_ZIP_SIZE,
 };
 pub use error::{Error, ErrorKind, Result};
+pub use links::{
+    DetectedAsset, DetectedCopy, DetectedLink, Link, LinkCopy, LinkEstimate, LinkEvent,
+    LinkEventPage, LinkPage, LinkPrepare, LinkRecipient, NewLink,
+};
 pub use storage::{
     NewStorageDestination, StorageAttempt, StorageDelivery, StorageDeliveryPage,
     StorageDestination, StorageDestinationUpdate, StorageVisibility,
@@ -444,6 +449,15 @@ pub struct DetectionResult {
     /// Hardware that actually processed the request, when reported.
     #[serde(default, deserialize_with = "wire_field")]
     pub accelerator: Option<Accelerator>,
+    /// The traceable link copy the watermark is on: the link, the recipient
+    /// and their first open. `None` when it isn't on one, or the key lacks
+    /// `links:read`.
+    #[serde(default)]
+    pub copy: Option<DetectedCopy>,
+    /// Another of your watermarked assets the watermark is on. `None` when it
+    /// isn't on one, or the key lacks `assets:read`.
+    #[serde(default)]
+    pub asset: Option<DetectedAsset>,
 }
 
 /// Processing state of an asynchronous job.
@@ -1386,8 +1400,8 @@ mod tests {
 
     #[test]
     fn user_agent_carries_version() {
-        assert_eq!(VERSION, "1.4.0");
-        assert_eq!(USER_AGENT, "etchv-rust/1.4.0");
+        assert_eq!(VERSION, "1.5.0");
+        assert_eq!(USER_AGENT, "etchv-rust/1.5.0");
     }
 
     #[test]
