@@ -1400,8 +1400,8 @@ mod tests {
 
     #[test]
     fn user_agent_carries_version() {
-        assert_eq!(VERSION, "1.5.0");
-        assert_eq!(USER_AGENT, "etchv-rust/1.5.0");
+        assert_eq!(VERSION, "1.6.0");
+        assert_eq!(USER_AGENT, "etchv-rust/1.6.0");
     }
 
     #[test]

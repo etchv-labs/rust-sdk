@@ -6,6 +6,7 @@ use tiny_http::{Header, Response, Server};
 const LNK: &str = "lnk_0123456789abcdef0123456789abcdef";
 const LEV: &str = "lev_0123456789abcdef0123456789abcdef";
 const WH: &str = "wh_0123456789abcdef0123456789abcdef";
+const LRC: &str = "lrc_0123456789abcdef0123456789abcdef";
 
 fn ast(c: char) -> String {
     format!("ast_{}", c.to_string().repeat(64))
@@ -24,7 +25,8 @@ impl Seen {
     }
 }
 
-/// Answer one request per reply, in order, and return what was sent.
+/// Answer one request per reply, in order, and return what was sent. A null
+/// reply is sent with no body.
 fn serve(replies: Vec<(u16, Value)>) -> (Client, thread::JoinHandle<Vec<Seen>>) {
     let server = Server::http("127.0.0.1:0").unwrap();
     let base = format!("http://{}", server.server_addr());
@@ -56,7 +58,12 @@ fn serve(replies: Vec<(u16, Value)>) -> (Client, thread::JoinHandle<Vec<Seen>>) 
                 key,
                 body,
             });
-            let response = Response::from_data(reply.to_string().into_bytes())
+            let data = if reply.is_null() {
+                Vec::new()
+            } else {
+                reply.to_string().into_bytes()
+            };
+            let response = Response::from_data(data)
                 .with_status_code(status)
                 .with_header(Header::from_bytes("Content-Type", "application/json").unwrap())
                 .with_header(Header::from_bytes("Retry-After", "0.01").unwrap());
@@ -77,7 +84,7 @@ fn link(recipients: Value) -> Value {
 }
 
 fn recipient() -> Value {
-    json!({"email": "alex@example.com", "status": "opened", "opened_at": "2026-10-28T01:00:00Z",
+    json!({"id": LRC, "email": "alex@example.com", "status": "opened", "opened_at": "2026-10-28T01:00:00Z",
         "last_opened_at": "2026-10-28T02:00:00Z", "open_count": 2, "download_count": 1,
         "copy": {"status": "ready", "asset_id": ast('c'), "error_code": null}})
 }
@@ -203,6 +210,10 @@ fn invalid_link_input_is_refused_before_any_request() {
     refused(client.get_link("lnk_nope").unwrap_err());
     refused(client.get_link(&LNK.to_uppercase()).unwrap_err());
     refused(client.revoke_link("../links").unwrap_err());
+    refused(client.delete_link("lnk_nope").unwrap_err());
+    refused(client.remove_link_recipient(LNK, "lrc_nope").unwrap_err());
+    refused(client.remove_link_recipient(LNK, LNK).unwrap_err());
+    refused(client.remove_link_recipient("lnk_nope", LRC).unwrap_err());
     refused(client.list_links(Some(0), None).unwrap_err());
     refused(client.list_links(Some(51), None).unwrap_err());
     refused(client.list_links(None, Some(LEV)).unwrap_err());
@@ -271,6 +282,7 @@ fn every_link_route() {
     assert!(client.list_links(None, None).unwrap().next_cursor.is_none());
 
     let got = client.get_link(LNK).unwrap();
+    assert_eq!(got.recipients[0].id, LRC);
     assert_eq!(
         got.recipients[0].opened_at.as_deref(),
         Some("2026-10-28T01:00:00Z")
@@ -321,6 +333,45 @@ fn every_link_route() {
         json!({"asset_id": ast('a'), "name": "Price list", "allowed_domains": ["example.com"]})
     );
     assert!(seen[0].key.is_none(), "estimates take no idempotency key");
+}
+
+#[test]
+fn delete_a_link_or_remove_one_recipient() {
+    let (client, worker) = serve(vec![
+        (204, Value::Null),
+        (200, link(json!([]))),
+        (404, json!({"detail": "Recipient not found"})),
+        (
+            403,
+            json!({"detail": "Deleting a link or recipient also needs the assets:delete scope"}),
+        ),
+    ]);
+    client.delete_link(LNK).unwrap();
+    let left = client.remove_link_recipient(LNK, LRC).unwrap();
+    assert!(left.recipients.is_empty());
+    let missing = client.remove_link_recipient(LNK, LRC).unwrap_err();
+    assert_eq!((missing.kind, missing.status_code), (ErrorKind::Api, 404));
+    let refused = client.delete_link(LNK).unwrap_err();
+    assert_eq!((refused.kind, refused.status_code), (ErrorKind::Api, 403));
+
+    let seen = worker.join().unwrap();
+    let (one, recipient) = (
+        format!("/links/{LNK}"),
+        format!("/links/{LNK}/recipients/{LRC}"),
+    );
+    let routes: Vec<(&str, &str)> = seen
+        .iter()
+        .map(|s| (s.method.as_str(), s.url.as_str()))
+        .collect();
+    assert_eq!(
+        routes,
+        [
+            ("DELETE", one.as_str()),
+            ("DELETE", recipient.as_str()),
+            ("DELETE", recipient.as_str()),
+            ("DELETE", one.as_str()),
+        ]
+    );
 }
 
 #[test]

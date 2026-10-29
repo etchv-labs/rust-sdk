@@ -187,6 +187,10 @@ pub struct LinkCopy {
 #[derive(Debug, Clone, Deserialize)]
 #[non_exhaustive]
 pub struct LinkRecipient {
+    /// Recipient ID (`lrc_…`), which [`Client::remove_link_recipient`] takes. Empty from a server that
+    /// predates it.
+    #[serde(default)]
+    pub id: String,
     /// The recipient's email.
     pub email: String,
     /// `not_opened` or `opened`.
@@ -478,6 +482,32 @@ impl Client {
         self.call_json(
             Method::POST,
             &format!("{}/revoke", link_path(link_id)?),
+            None,
+        )
+    }
+
+    /// Delete a link with every recipient's opens, downloads and copy
+    /// (`DELETE /links/{id}`, `links:write` and `assets:delete`, owner or
+    /// admin). The link stops at once, as on a revoke. This can't be undone,
+    /// and detection no longer names the link's recipients. Deleting again
+    /// also succeeds.
+    pub fn delete_link(&self, link_id: &str) -> Result<()> {
+        self.call(Method::DELETE, &link_path(link_id)?, None)?;
+        Ok(())
+    }
+
+    /// Delete one recipient's opens, downloads and copy, for example when
+    /// they ask to be erased, and return the link without them
+    /// (`DELETE /links/{id}/recipients/{recipient_id}`, `links:write` and
+    /// `assets:delete`, owner or admin). This can't be undone, and detection
+    /// no longer names the recipient. `recipient_id` is the recipient's
+    /// [`LinkRecipient::id`].
+    pub fn remove_link_recipient(&self, link_id: &str, recipient_id: &str) -> Result<Link> {
+        let path = link_path(link_id)?;
+        check_id(recipient_id, "lrc_", 32, "recipient")?;
+        self.call_json(
+            Method::DELETE,
+            &format!("{path}/recipients/{recipient_id}"),
             None,
         )
     }
