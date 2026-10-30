@@ -316,8 +316,8 @@ pub struct Options {
     /// Original filename sent with the upload. Defaults to a generic name for the media type.
     pub filename: Option<String>,
     /// `Idempotency-Key` header (8–128 letters, digits, `-` or `_`). Generated
-    /// automatically for durable operations when absent. Persist your own key to
-    /// recover a job across process restarts.
+    /// automatically for durable operations and instant detection when absent.
+    /// Persist your own key to recover a job across process restarts.
     pub idempotency_key: Option<String>,
     /// Verified customer storage destination (`dst_…`) for the watermarked result.
     /// Embedding only.
@@ -332,6 +332,12 @@ pub struct Options {
     /// (`active_content` query parameter). Document embedding only; omitted
     /// when `None`, which keeps them. See [`ActiveContent`].
     pub active_content: Option<ActiveContent>,
+    /// Whether the API keeps an instant detection's result for 24 hours so a
+    /// retry with the same idempotency key gets it back (`keep_result` query
+    /// parameter). Image and document detection only; omitted when `None`,
+    /// which keeps it. With `false`, a retry runs detection again on the resent
+    /// file at no charge.
+    pub keep_result: Option<bool>,
 }
 
 impl Options {
@@ -369,6 +375,12 @@ impl Options {
     /// Keep or remove what a PDF viewer runs by itself. Document embedding only.
     pub fn active_content(mut self, active_content: ActiveContent) -> Self {
         self.active_content = Some(active_content);
+        self
+    }
+    /// Keep (`true`, the API default) or keep no copy of an instant detection's
+    /// result. Image and document detection only.
+    pub fn keep_result(mut self, keep_result: bool) -> Self {
+        self.keep_result = Some(keep_result);
         self
     }
 }
@@ -655,6 +667,7 @@ fn with_query(path: &str, pairs: &[(&str, &str)]) -> String {
     format!("{path}?{query}")
 }
 
+#[derive(Clone)]
 struct Upload<'a> {
     file: &'a [u8],
     filename: String,
@@ -816,11 +829,27 @@ impl Client {
     pub fn embed_video(&self, file: &[u8], data: &Value, options: Options) -> Result<EmbedResult> {
         self.embed(Media::Video, file, data, options)
     }
-    /// Detect a watermark in an image. Synchronous and not retried automatically.
+    /// Detect a watermark in an image (synchronous).
+    ///
+    /// A dropped connection is retried with the same idempotency key
+    /// (generated when absent) until the client deadline, and so is a retry the
+    /// API reports as still running (HTTP 409, [`Error::code`]
+    /// `request_in_progress`, or `upload_in_use` while the first copy holds the
+    /// file's upload). The API returns the first result without charging again;
+    /// when time runs out the error is [`ErrorKind::Timeout`]. Other errors are
+    /// not retried: HTTP 409 `replay_expired` or `request_failed` is returned as
+    /// is. Every error carries the key in [`Error::idempotency_key`]. The API
+    /// keeps the result 24 hours for these retries unless
+    /// [`Options::keep_result`] is `false`; then a retry runs detection again,
+    /// and a file that went through an upload is uploaded again, bounded like any
+    /// upload; the resend after it stays within the client timeout counted from
+    /// the first send.
     pub fn detect_image(&self, file: &[u8], options: Options) -> Result<DetectionResult> {
         self.detect(Media::Image, file, options)
     }
-    /// Detect watermarks in a PDF (each page), DOCX or PPTX. Synchronous and not retried automatically.
+    /// Detect watermarks in a PDF (each page), DOCX or PPTX (synchronous),
+    /// retried like [`Client::detect_image`]. A long PDF runs as a job, which
+    /// keeps its result like any job whatever [`Options::keep_result`] says.
     pub fn detect_document(&self, file: &[u8], options: Options) -> Result<DetectionResult> {
         self.detect(Media::Document, file, options)
     }
@@ -888,10 +917,12 @@ impl Client {
     pub fn get_embed_result(&self, request_id: &str) -> Result<EmbedResult> {
         check_id(request_id, "req_", 64, "request")?;
         let (b, h) = self.media_request(
+            Instant::now(),
             format!("watermarks/jobs/{request_id}/result"),
             None,
             None,
             true,
+            false,
             false,
         )?;
         embedding(b, h)
@@ -901,10 +932,12 @@ impl Client {
     pub fn get_detection_result(&self, request_id: &str) -> Result<DetectionResult> {
         check_id(request_id, "req_", 64, "request")?;
         let (b, h) = self.media_request(
+            Instant::now(),
             format!("watermarks/detection-jobs/{request_id}/result"),
             None,
             None,
             true,
+            false,
             true,
         )?;
         detection(&b, &h)
@@ -933,6 +966,10 @@ impl Client {
     fn detect(&self, media: Media, file: &[u8], options: Options) -> Result<DetectionResult> {
         if media != Media::Video && file.len() > SYNC_DETECTION_MAX_SIZE {
             // Synchronous image and PDF detection stops at 95 MB; larger delivered files run as a job.
+            let options = Options {
+                keep_result: None,
+                ..options
+            };
             let receipt = self.submit_detection(media, file, options, None)?;
             return self.get_detection_result(&receipt.request_id);
         }
@@ -964,7 +1001,8 @@ impl Client {
             media.upload_kind()
         };
         self.upload_large(&mut upload, kind)?;
-        let (bytes, _) = self.media_request(path, Some(upload), key, true, detect)?;
+        let (bytes, _) =
+            self.media_request(Instant::now(), path, Some(upload), key, true, false, detect)?;
         serde_json::from_slice(&bytes).map_err(|e| Error::decode(202, e))
     }
 
@@ -976,36 +1014,81 @@ impl Client {
         options: Options,
     ) -> Result<(Vec<u8>, HeaderMap)> {
         let detect = data.is_none();
-        // Embedding and video detection are durable jobs; image/PDF detection is synchronous.
+        // Embedding and video detection are durable jobs; image/PDF detection is synchronous,
+        // and the API replays it for the same key, so it is resent after a dropped connection.
         let durable = !detect || media == Media::Video;
-        let (path, mut upload, key) = prepare(media, file, data, options, durable, detect, None)?;
+        let resend = !durable;
+        let (path, mut upload, key) =
+            prepare(media, file, data, options, durable || resend, detect, None)?;
         let kind = if detect {
             UploadKind::Detect
         } else {
             media.upload_kind()
         };
-        self.upload_large(&mut upload, kind)?;
-        self.media_request(
-            path,
-            Some(upload),
-            key,
+        // An upload failure carries the key too, so the caller can resend with it.
+        let keyed = |mut e: Error| {
+            e.idempotency_key = key.clone();
+            e
+        };
+        self.upload_large(&mut upload, kind).map_err(keyed)?;
+        let detection_job = detect && media == Media::Video;
+        let uploaded = upload.upload_id.is_some();
+        let started = Instant::now();
+        let sent = self.media_request(
+            started,
+            path.clone(),
+            Some(upload.clone()),
+            key.clone(),
             durable,
-            detect && media == Media::Video,
-        )
+            resend,
+            detection_job,
+        );
+        match sent {
+            Err(e) if resend && uploaded && e.code().as_deref() == Some("upload_consumed") => {
+                // A dropped detection consumed the upload and kept no result (keep_result false):
+                // the API runs it again on the same bytes, so upload them again and resend with
+                // the same key, within the first send's deadline.
+                upload.upload_id = None;
+                self.upload_large(&mut upload, kind).map_err(keyed)?;
+                self.media_request(
+                    started,
+                    path,
+                    Some(upload),
+                    key,
+                    durable,
+                    resend,
+                    detection_job,
+                )
+            }
+            sent => sent,
+        }
     }
 
-    /// Upload/poll loop shared by media operations.
+    /// Upload/poll loop shared by media operations and downloads.
+    ///
+    /// `resend` is for a request the API answers the same way twice (a GET
+    /// download, or an instant detection with its idempotency key): it is sent
+    /// again after a dropped connection and while the API reports the first copy
+    /// still running, but no error status is retried. The client deadline runs
+    /// from `started`. Every error carries the idempotency key.
+    #[allow(clippy::too_many_arguments)]
     fn media_request(
         &self,
+        started: Instant,
         mut path: String,
         mut upload: Option<Upload<'_>>,
         idempotency_key: Option<String>,
         durable: bool,
+        resend: bool,
         detection_job: bool,
     ) -> Result<(Vec<u8>, HeaderMap)> {
         let is_async = path.split('?').next().unwrap_or("").ends_with("/async");
-        let started = Instant::now();
+        // Only an instant detection carries an upload_id with `resend`, and only one the SDK
+        // made for this call: a resend can find the first copy still holding it.
+        let own_upload = resend && upload.as_ref().is_some_and(|up| up.upload_id.is_some());
         let mut request_id = None;
+        // The last dropped connection of a keyless download, returned if time runs out.
+        let mut dropped = None;
         let fail = |mut e: Error, request_id: Option<String>| {
             e.request_id = e.request_id.take().or(request_id);
             e.idempotency_key = idempotency_key.clone();
@@ -1016,6 +1099,14 @@ impl Client {
                 Duration::from_secs_f64(seconds.clamp(0.01, 5.0))
                     .min(self.timeout.saturating_sub(started.elapsed())),
             )
+        };
+        // Whether to send again after a dropped connection. A download out of time returns
+        // the failure itself; a keyed request ends with the deadline error and its key.
+        let again = || {
+            durable
+                || (resend
+                    && (idempotency_key.is_some()
+                        || started.elapsed() + Duration::from_secs(1) < self.timeout))
         };
         while started.elapsed() < self.timeout {
             let url = format!("{}/{}", self.base, path);
@@ -1045,9 +1136,16 @@ impl Client {
             let response = match req.send() {
                 Ok(r) => r,
                 Err(e) => {
-                    if !durable || e.is_builder() {
-                        return Err(fail(Error::transport(e), request_id));
+                    let retry = !e.is_builder() && again();
+                    let err = if e.is_timeout() && resend {
+                        Error::new(ErrorKind::Timeout, 0, "Client deadline exceeded")
+                    } else {
+                        Error::transport(e)
+                    };
+                    if !retry {
+                        return Err(fail(err, request_id));
                     }
+                    dropped = (!durable && idempotency_key.is_none()).then_some(err);
                     pause(1.0);
                     continue;
                 }
@@ -1058,13 +1156,15 @@ impl Client {
             let bytes = match read_body(response) {
                 Ok(b) => b,
                 Err(e) => {
-                    if !durable {
+                    if !again() {
                         return Err(fail(Error::transport(e), request_id));
                     }
+                    dropped = (!durable && idempotency_key.is_none()).then(|| Error::transport(e));
                     pause(1.0);
                     continue;
                 }
             };
+            dropped = None;
             if bytes.len() > MAX_DOWNLOAD_SIZE {
                 return Err(fail(
                     Error::response(status, "Response exceeds the SDK size limit"),
@@ -1096,6 +1196,14 @@ impl Client {
                 pause(retry_after(&headers).unwrap_or(1.0));
                 continue;
             }
+            let code = &detail["detail"]["code"];
+            if resend
+                && status == 409
+                && (code == "request_in_progress" || own_upload && code == "upload_in_use")
+            {
+                pause(retry_after(&headers).unwrap_or(1.0));
+                continue;
+            }
             if durable && [429, 502, 503, 504].contains(&status) && detail["status"] != "failed" {
                 pause(retry_after(&headers).unwrap_or(1.0));
                 continue;
@@ -1103,6 +1211,9 @@ impl Client {
             let body = String::from_utf8_lossy(&bytes[..bytes.len().min(10000)]).into_owned();
             let mut err = Error::new(ErrorKind::Api, status, body);
             err.retry_after = rate_limit_delay(status, &headers);
+            return Err(fail(err, request_id));
+        }
+        if let Some(err) = dropped {
             return Err(fail(err, request_id));
         }
         Err(fail(
@@ -1113,6 +1224,14 @@ impl Client {
             ),
             request_id,
         ))
+    }
+
+    /// A file download (`GET`), retried after a dropped connection within the
+    /// client deadline. Error statuses are not retried.
+    pub(crate) fn download(&self, path: String) -> Result<Vec<u8>> {
+        Ok(self
+            .media_request(Instant::now(), path, None, None, false, true, false)?
+            .0)
     }
 
     /// Single JSON/binary request used by management endpoints. Not retried.
@@ -1241,6 +1360,14 @@ fn prepare<'a>(
     }
     if let Some(accelerator) = options.accelerator {
         pairs.push(("accelerator", accelerator.as_str()));
+    }
+    if let Some(keep_result) = options.keep_result {
+        if !detect || media == Media::Video || is_async {
+            return Err(Error::input(
+                "keep_result applies to instant image and document detection only",
+            ));
+        }
+        pairs.push(("keep_result", if keep_result { "true" } else { "false" }));
     }
     if let Some(active_content) = options.active_content {
         if detect || media != Media::Document {
@@ -1400,8 +1527,8 @@ mod tests {
 
     #[test]
     fn user_agent_carries_version() {
-        assert_eq!(VERSION, "1.6.0");
-        assert_eq!(USER_AGENT, "etchv-rust/1.6.0");
+        assert_eq!(VERSION, "1.7.0");
+        assert_eq!(USER_AGENT, "etchv-rust/1.7.0");
     }
 
     #[test]

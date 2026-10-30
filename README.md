@@ -96,7 +96,9 @@ takes `webhook_id`, `accelerator`, `storage_destination_id` and `active_content`
 and archive downloads fail only when no data moves for the client timeout, however long they take in
 all, so large files on slow links are fine; time your own `Write` spends saving the archive does not
 count. `download_batch_archive` returns the zip in memory; `download_batch_archive_to` streams it into
-any `Write`. Archive errors carry `code()`: `batch_not_started`, `archive_not_requested`,
+any `Write`. If the connection drops mid-download, `download_batch_archive` starts again from the
+beginning; `download_batch_archive_to` returns the error, since what it already wrote to a `Write`
+cannot be taken back. Archive errors carry `code()`: `batch_not_started`, `archive_not_requested`,
 `archive_too_large` or `archive_unavailable` (HTTP 409); HTTP 410 means it expired. Resubmitting a
 batch that expired before it started fails with HTTP 410 and `batch_expired`; use a new idempotency key.
 `cancel_batch` refunds files that have not started; they end with `error_code` `cancelled`, and files
@@ -222,6 +224,24 @@ Every method returns `Result<T, etchv::Error>`. `Error` has `kind` (`ErrorKind::
 `status_code` (`0` when no HTTP response), `request_id`, `idempotency_key` and `message()`.
 Include the request ID when contacting support.
 Embedding and video detection retry HTTP 429, 502, 503 and 504 (honoring `Retry-After`) until the client deadline.
+
+These methods also retry a dropped connection until the client deadline: `embed_image`,
+`embed_document`, `embed_video`, `detect_video`, `submit_embed`, `submit_detection`,
+`get_embed_result`, `get_detection_result`, `submit_batch`, `submit_batch_zip`, `get_batch`,
+`wait_for_batch`, `batch_results`, `cancel_batch`, `list_batches`, `create_link`, `detect_image`,
+`detect_document`, `download_asset`, `download_storage_delivery` and `download_batch_archive`
+(`download_batch_archive_to` only until the first bytes arrive). Other methods return the
+`Transport` error.
+
+`detect_image` and `detect_document` resend with the same idempotency key (generated when absent), and
+the API returns the first result without charging again. A retry the API reports as still running
+(HTTP 409, `code()` `request_in_progress`, or `upload_in_use` for a file sent through an upload)
+waits and is sent again; `replay_expired` and `request_failed` are returned as errors. The API keeps
+the result 24 hours for this; pass `Options::new().keep_result(false)` to keep nothing, and a retry
+then runs detection again at no charge, after the SDK uploads the file again if it went through an
+upload. The detection requests, resends included, stay within one client timeout counted from the
+first send; uploading the file again is bounded like any upload. Errors from a keyed call carry its
+`idempotency_key`, so you can resend it yourself.
 Other HTTP 429 errors carry `retry_after` (a `Duration`, `None` without the header), `code()` (`rate_limited` or `concurrency_limited`) and `limit()`.
 
 ```rust

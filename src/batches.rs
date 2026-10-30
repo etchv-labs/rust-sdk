@@ -934,9 +934,19 @@ impl Client {
     /// Download the zip of every result of a batch created with
     /// [`BatchOptions::archive`] into memory. See
     /// [`Client::download_batch_archive_to`], which streams it to a file instead.
+    ///
+    /// A connection dropped or stalled mid-download starts the download again
+    /// from the beginning (the archive route does not resume) until `timeout`
+    /// passes.
     pub fn download_batch_archive(&self, batch_id: &str, timeout: Duration) -> Result<Vec<u8>> {
         let mut bytes = Vec::new();
-        self.download_batch_archive_to(batch_id, &mut bytes, timeout)?;
+        self.archive_to(
+            batch_id,
+            &mut bytes,
+            timeout,
+            MAX_BATCH_ARCHIVE_SIZE,
+            Some(Vec::clear),
+        )?;
         Ok(bytes)
     }
 
@@ -958,6 +968,12 @@ impl Client {
     /// `archive_not_requested`, `archive_too_large` or `archive_unavailable`);
     /// HTTP 410 means it expired.
     ///
+    /// A connection that drops before the archive starts is retried. One that
+    /// drops or stalls mid-download returns the error: the bytes already
+    /// written to `sink` cannot be taken back through [`Write`], so start again
+    /// with a fresh sink, or use [`Client::download_batch_archive`], which
+    /// starts over by itself.
+    ///
     /// ```no_run
     /// # let client = etchv::Client::new("etchv_...")?;
     /// # let batch_id = "bat_00000000000000000000000000000000";
@@ -971,15 +987,18 @@ impl Client {
         sink: &mut W,
         timeout: Duration,
     ) -> Result<u64> {
-        self.archive_to(batch_id, sink, timeout, MAX_BATCH_ARCHIVE_SIZE)
+        self.archive_to(batch_id, sink, timeout, MAX_BATCH_ARCHIVE_SIZE, None)
     }
 
+    /// `restart` empties `sink` so a download dropped mid-body can start over;
+    /// without it, such a drop returns the error.
     fn archive_to<W: Write>(
         &self,
         batch_id: &str,
         sink: &mut W,
         timeout: Duration,
         limit: u64,
+        restart: Option<fn(&mut W)>,
     ) -> Result<u64> {
         let url = format!("{}/{}/archive", self.base, batch_path(batch_id)?);
         let wait = if timeout.is_zero() {
@@ -1015,7 +1034,19 @@ impl Client {
             let headers = response.headers().clone();
             request_id = header(&headers, "x-request-id").or(request_id);
             if status == 200 {
-                return stream_archive(response, sink, limit, self.timeout).map_err(|mut e| {
+                let mut dropped = false;
+                let streamed = stream_archive(response, sink, limit, self.timeout, &mut dropped);
+                if streamed.is_err()
+                    && dropped
+                    && let Some(restart) = restart
+                    && !remaining().is_zero()
+                {
+                    // The archive route does not serve Range requests: drop what was written and start over.
+                    restart(sink);
+                    sleep(Duration::from_secs(1).min(remaining()));
+                    continue;
+                }
+                return streamed.map_err(|mut e| {
                     e.request_id = e.request_id.take().or(request_id);
                     e
                 });
@@ -1202,12 +1233,14 @@ impl Client {
 }
 
 /// Copy a 200 archive response into `sink`: it must be a zip within `limit`,
-/// and each read may wait up to `idle` for data.
+/// and each read may wait up to `idle` for data. Sets `dropped` when reading
+/// the response failed (the connection broke or stalled).
 fn stream_archive<W: Write>(
     mut response: reqwest::blocking::Response,
     sink: &mut W,
     limit: u64,
     idle: Duration,
+    dropped: &mut bool,
 ) -> Result<u64> {
     // Reported like the API's own refusal, so `code()` is `archive_too_large`.
     let too_large = || {
@@ -1235,6 +1268,7 @@ fn stream_archive<W: Write>(
             Ok(n) => n,
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
             Err(e) => {
+                *dropped = true;
                 let timed_out = e.kind() == std::io::ErrorKind::TimedOut
                     || e.get_ref()
                         .and_then(|inner| inner.downcast_ref::<reqwest::Error>())
@@ -1331,6 +1365,7 @@ mod tests {
                     &mut sink,
                     Duration::from_secs(5),
                     100_000,
+                    None,
                 )
                 .unwrap_err();
             drop(client);

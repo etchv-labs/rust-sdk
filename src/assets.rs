@@ -212,10 +212,9 @@ impl Client {
     }
 
     /// Download an asset's file (`GET /assets/{id}/content`). HTTP 410 means
-    /// the file expired while the record remains.
+    /// the file expired while the record remains. A dropped connection is
+    /// retried within the client deadline.
     pub fn download_asset(&self, id: &str) -> Result<Vec<u8>> {
-        Ok(self
-            .call(Method::GET, &format!("{}/content", path(id)?), None)?
-            .1)
+        self.download(format!("{}/content", path(id)?))
     }
 }

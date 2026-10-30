@@ -480,10 +480,9 @@ impl Client {
     }
 
     /// Download a stored object through Etchv (`GET /storage/deliveries/{id}/content`).
-    /// HTTP 409 means the delivery is not yet `stored`.
+    /// HTTP 409 means the delivery is not yet `stored`. A dropped connection is
+    /// retried within the client deadline.
     pub fn download_storage_delivery(&self, id: &str) -> Result<Vec<u8>> {
-        Ok(self
-            .call(Method::GET, &format!("{}/content", delivery(id)?), None)?
-            .1)
+        self.download(format!("{}/content", delivery(id)?))
     }
 }
